@@ -1,0 +1,49 @@
+import os
+from dataclasses import dataclass
+from typing import List, Optional
+
+@dataclass
+class VoiceConfig:
+    """Configuration for voice settings"""
+    voice_name: str = "Aoede"  # Options: Aoede, Kore, Leda, Fenrir
+    sample_rate: int = 24000
+    chunk_size: int = 1024
+
+@dataclass
+class WakeWordConfig:
+    """Configuration for wake word detection"""
+    enabled: bool = True
+    keywords: List[str] = None
+    access_key: Optional[str] = None
+    
+    def __post_init__(self):
+        if self.keywords is None:
+            self.keywords = ["sakura"]  # Custom wake word - train on Picovoice console
+        if self.access_key is None:
+            self.access_key = os.getenv("PICOVOICE_ACCESS_KEY")
+
+@dataclass
+class GeminiConfig:
+    """Configuration for Gemini API"""
+    api_key: Optional[str] = None
+    model: str = "gemini-2.5-flash-native-audio-preview-12-2025"
+    
+    def __post_init__(self):
+        if self.api_key is None:
+            self.api_key = os.getenv("GEMINI_API_KEY")
+
+@dataclass
+class AppConfig:
+    """Main application configuration"""
+    voice: VoiceConfig = None
+    wake_word: WakeWordConfig = None
+    gemini: GeminiConfig = None
+    session_file: str = "gf_session.txt"
+    
+    def __post_init__(self):
+        if self.voice is None:
+            self.voice = VoiceConfig()
+        if self.wake_word is None:
+            self.wake_word = WakeWordConfig()
+        if self.gemini is None:
+            self.gemini = GeminiConfig()

@@ -1,0 +1,68 @@
+# Virtual environment
+.venv/
+venv/
+env/
+
+# Environment and secrets
+.env
+api_keys.json
+env-temp keys.txt
+*.pem
+*.key
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Kiro development docs (internal only)
+kiro_docs.md
+.kiro/
+
+# Memory and session files (user-specific)
+sakura_memory.json
+session_handle.json
+
+# Logs
+*.log
+logs/
+
+# Temp files
+*.tmp
+*.temp
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Backups (large files)
+backups/*.zip
+
+# Test files
+test_*.py
+!test_live.py

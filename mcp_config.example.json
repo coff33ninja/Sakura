@@ -1,0 +1,53 @@
+{
+  "_comment": "MCP Server Configuration - Use uvx (Python) or npx (Node.js) based on what you have installed",
+  "servers": {
+    "filesystem": {
+      "_comment": "Official filesystem server - Python version",
+      "type": "stdio",
+      "command": ["uvx", "mcp-server-filesystem", "--root", "C:/Users/YourName/Documents"]
+    },
+    "fetch": {
+      "_comment": "Fetch URLs - Python version",
+      "type": "stdio",
+      "command": ["uvx", "mcp-server-fetch"]
+    },
+    "memory": {
+      "_comment": "Persistent memory store - Python version", 
+      "type": "stdio",
+      "command": ["uvx", "mcp-server-memory"]
+    },
+    "time": {
+      "_comment": "Time and timezone tools - Python version",
+      "type": "stdio",
+      "command": ["uvx", "mcp-server-time"]
+    },
+    "brave-search": {
+      "_comment": "Brave search API - requires BRAVE_API_KEY",
+      "type": "stdio",
+      "command": ["uvx", "mcp-server-brave-search"],
+      "env": {
+        "BRAVE_API_KEY": "your_brave_api_key"
+      }
+    },
+    "custom-sse-server": {
+      "_comment": "Example SSE server connection",
+      "type": "sse",
+      "url": "http://localhost:3000"
+    }
+  },
+  "_node_examples": {
+    "_comment": "If you have Node.js/npx installed, these also work:",
+    "smooth_operator": {
+      "type": "stdio",
+      "command": ["npx", "-y", "smooth-operator-mcp"]
+    },
+    "desktop_commander": {
+      "type": "stdio",
+      "command": ["npx", "-y", "@anthropic/desktop-commander"]
+    },
+    "everything_search": {
+      "type": "stdio",
+      "command": ["npx", "-y", "mcp-server-everything"]
+    }
+  }
+}
