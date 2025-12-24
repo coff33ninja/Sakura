@@ -4,21 +4,49 @@ from typing import List, Optional
 
 @dataclass
 class VoiceConfig:
-    """Configuration for voice settings"""
-    voice_name: str = "Aoede"  # Options: Aoede, Kore, Leda, Fenrir
+    """Configuration for voice settings
+    
+    Available Gemini voices:
+    - Aoede: Warm, friendly female voice (default)
+    - Charon: Deep, calm male voice
+    - Fenrir: Energetic male voice
+    - Kore: Soft, gentle female voice
+    - Puck: Playful, expressive voice
+    """
+    voice_name: str = "Aoede"
     sample_rate: int = 24000
     chunk_size: int = 1024
 
 @dataclass
 class WakeWordConfig:
-    """Configuration for wake word detection"""
+    """Configuration for wake word detection
+    
+    Note: Custom wake words require training on Picovoice Console:
+    https://console.picovoice.ai/
+    
+    Built-in keywords available without training:
+    alexa, americano, blueberry, bumblebee, computer, grapefruit,
+    grasshopper, hey barista, hey google, hey siri, jarvis, ok google,
+    pico clock, picovoice, porcupine, terminator
+    """
     enabled: bool = True
     keywords: List[str] = None
     access_key: Optional[str] = None
     
     def __post_init__(self):
         if self.keywords is None:
-            self.keywords = ["sakura"]  # Custom wake word - train on Picovoice console
+            # Use ASSISTANT_NAME as wake word, or default to built-in "jarvis"
+            name = os.getenv("ASSISTANT_NAME", "Sakura").lower()
+            # Check if it's a built-in Picovoice keyword
+            builtin = ["alexa", "americano", "blueberry", "bumblebee", "computer", 
+                      "grapefruit", "grasshopper", "hey barista", "hey google", 
+                      "hey siri", "jarvis", "ok google", "pico clock", "picovoice", 
+                      "porcupine", "terminator"]
+            if name in builtin:
+                self.keywords = [name]
+            else:
+                # Custom name needs Picovoice training, fallback to jarvis
+                self.keywords = ["jarvis"]
         if self.access_key is None:
             self.access_key = os.getenv("PICOVOICE_ACCESS_KEY")
 

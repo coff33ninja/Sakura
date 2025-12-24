@@ -317,14 +317,24 @@ class MCPClient(BaseTool):
     async def cleanup(self):
         """Disconnect from all MCP servers - async"""
         async with self._lock:
-            # Terminate stdio processes
-            for name, process in self._processes.items():
+            # Terminate stdio processes properly on Windows
+            for name, process in list(self._processes.items()):
                 try:
+                    # Close stdin first to signal process to exit
+                    if process.stdin:
+                        process.stdin.close()
+                    
+                    # Try graceful termination
                     process.terminate()
-                    await asyncio.wait_for(process.wait(), timeout=5.0)
-                except Exception as e:
-                    logging.error(f"Error terminating MCP server {name}: {e}")
-                    process.kill()
+                    try:
+                        await asyncio.wait_for(process.wait(), timeout=2.0)
+                    except asyncio.TimeoutError:
+                        # Force kill if it doesn't respond
+                        process.kill()
+                        await asyncio.wait_for(process.wait(), timeout=1.0)
+                except Exception:
+                    # Silently ignore cleanup errors - process may already be dead
+                    pass
             
             self._processes.clear()
             self.connected_servers.clear()
@@ -332,7 +342,10 @@ class MCPClient(BaseTool):
             
             # Close HTTP client
             if self.http_client:
-                await self.http_client.aclose()
+                try:
+                    await self.http_client.aclose()
+                except Exception:
+                    pass
                 self.http_client = None
             
             logging.info("MCP client cleanup completed")

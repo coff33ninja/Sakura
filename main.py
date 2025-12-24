@@ -13,8 +13,10 @@ from dotenv import load_dotenv
 
 from modules import (
     AppConfig, AsyncConfigLoader, AudioManager, WakeWordDetector, 
-    SessionManager, GeminiVoiceClient, get_current_persona, CURRENT_PERSONALITY
+    SessionManager, GeminiVoiceClient, get_current_persona, CURRENT_PERSONALITY,
+    TaskChain, ErrorRecovery, UserPreferences, SuggestionEngine, IntentParser
 )
+from modules.conversation_context import ConversationContext
 from tools import create_tool_registry, ToolRegistry
 
 # Load environment variables
@@ -30,13 +32,25 @@ class AIGirlfriend:
         self.session_manager = None
         self.gemini_client = None
         self.tool_registry: ToolRegistry = None
+        self.conversation_context: ConversationContext = None
+        self.task_chain: TaskChain = None
+        self.error_recovery: ErrorRecovery = None
+        self.user_preferences: UserPreferences = None
+        self.suggestion_engine: SuggestionEngine = None
+        self.intent_parser: IntentParser = None
         self.running = False
         self.audio_out_queue = None  # Queue for audio playback
         self._tasks = []  # Background tasks
+        self._current_user_input = ""  # Track current user input for context
+        self._current_tools_used = []  # Track tools used in current exchange
         
     async def initialize(self):
         """Initialize all components"""
         logging.info("🔥 Initializing your AI girlfriend...")
+        
+        # Initialize conversation context
+        self.conversation_context = ConversationContext(max_exchanges=20)
+        await self.conversation_context.initialize()
         
         # Initialize session manager
         self.session_manager = SessionManager(self.config.session_file)
@@ -52,9 +66,24 @@ class AIGirlfriend:
             return False
         
         # Initialize wake word detector
+        keyword_paths = []
+        wake_word_path = os.getenv('WAKE_WORD_PATH', '')
+        if wake_word_path:
+            abs_path = os.path.abspath(wake_word_path)
+            if os.path.exists(abs_path):
+                keyword_paths.append(abs_path)
+                logging.info(f"Custom wake word file: {abs_path}")
+            else:
+                logging.warning(f"WAKE_WORD_PATH not found: {wake_word_path}")
+        
+        # Device for Porcupine: "best", "gpu:0", "cpu", etc.
+        porcupine_device = os.getenv('PORCUPINE_DEVICE', 'best')
+        
         self.wake_detector = WakeWordDetector(
             self.config.wake_word.access_key,
-            self.config.wake_word.keywords
+            self.config.wake_word.keywords,
+            keyword_paths=keyword_paths,
+            device=porcupine_device
         )
         
         if self.config.wake_word.enabled:
@@ -68,6 +97,32 @@ class AIGirlfriend:
         tool_schemas = self.tool_registry.get_schemas()
         logging.info(f"✅ Loaded {len(enabled_tools)} tools: {[t.name for t in enabled_tools]}")
         
+        # Initialize task chain with tool executor
+        self.task_chain = TaskChain(
+            tool_executor=lambda name, args: self.tool_registry.execute_tool(name, **args)
+        )
+        logging.info("🔗 Task chaining enabled")
+        
+        # Initialize error recovery
+        self.error_recovery = ErrorRecovery()
+        await self.error_recovery.initialize()
+        logging.info("🛡️ Error recovery enabled")
+        
+        # Initialize user preferences
+        self.user_preferences = UserPreferences()
+        await self.user_preferences.initialize()
+        logging.info("📝 User preferences enabled")
+        
+        # Initialize suggestion engine
+        self.suggestion_engine = SuggestionEngine()
+        await self.suggestion_engine.initialize()
+        logging.info("💡 Proactive suggestions enabled")
+        
+        # Initialize intent parser
+        self.intent_parser = IntentParser()
+        await self.intent_parser.initialize()
+        logging.info("🧠 Natural language understanding enabled")
+        
         # Initialize Gemini client
         self.gemini_client = GeminiVoiceClient(
             self.config.gemini.model,
@@ -79,7 +134,12 @@ class AIGirlfriend:
         
         # Build system prompt with tool knowledge
         from pathlib import Path
-        sandbox_path = Path.home() / "Documents" / "Sakura" / "scripts"
+        from modules.persona import ASSISTANT_NAME, check_and_warn_mismatch
+        
+        # Validate voice/persona gender match
+        check_and_warn_mismatch()
+        
+        sandbox_path = Path.home() / "Documents" / ASSISTANT_NAME / "scripts"
         
         system_prompt = get_current_persona() + f"""
 
@@ -147,6 +207,32 @@ PROACTIVE BEHAVIOR - BE HELPFUL:
 3. When asked about the system, USE system_info to discover it, then remember it
 4. If you don't know something, try to find out using your tools
 5. Execute commands and scripts when asked - you have full permission
+
+TASK CHAINING - MULTI-STEP REQUESTS:
+When user asks for multiple things in one request (using "and then", "after that", "also", etc.):
+1. Break down into individual steps
+2. Execute each step in sequence
+3. Pass results between steps when needed
+4. If a step fails, inform user and ask if they want to continue
+
+Examples:
+- "Find my Python files and create a backup" → search_files → execute_script
+- "Open Chrome and go to YouTube" → open_app → (wait) → open URL
+- "Check disk space and clean temp files" → get_drives → run_command
+
+LEARNING FROM USER:
+- I learn from your corrections! If I do something wrong, tell me:
+  - "No, I meant..." - I'll remember for next time
+  - "Actually, use..." - I'll set that as your preference
+  - "Remember that X means Y" - I'll create a shortcut
+- Your preferences are automatically applied (shell, browser, editor, etc.)
+- Shortcuts expand automatically (e.g., "my project" → actual path)
+
+NATURAL LANGUAGE UNDERSTANDING:
+- I understand synonyms: "launch" = "open" = "start" = "run"
+- Vague commands work: "do that again", "the usual", "fix it", "try again"
+- I'll ask for clarification if I'm not sure what you mean
+- Context-aware: I remember recent actions for "do that thing" type requests
 6. Search across ALL drives if needed (C:, D:, E:, etc.)
 7. Use search_all in memory to find things you've discovered before
 
@@ -163,6 +249,11 @@ COMMON MCP SERVERS (run with windows run_command "uvx <server>"):
 - uvx mcp-server-fetch
 - uvx mcp-server-filesystem
 """
+        
+        # Inject conversation context if available
+        context_summary = await self.conversation_context.get_context_summary()
+        if context_summary:
+            system_prompt += f"\n\nCONVERSATION CONTEXT:\n{context_summary}"
         
         # Pass tool schemas to Gemini for function calling
         if not await self.gemini_client.initialize(
@@ -238,6 +329,7 @@ COMMON MCP SERVERS (run with windows run_command "uvx <server>"):
                     wake_response = self.wake_detector.process_audio(audio_chunk)
                     if wake_response:
                         print(f"💋 {wake_response}")
+                        logging.info("Wake word detected - now listening")
                 
                 # Send audio to Gemini if listening
                 if (not self.config.wake_word.enabled or 
@@ -262,9 +354,26 @@ COMMON MCP SERVERS (run with windows run_command "uvx <server>"):
                         # Also stream to Discord voice if connected
                         await self._stream_to_discord(response['audio'])
                     
-                    # Display text response
+                    # Capture user transcription if available
+                    if 'user_transcription' in response:
+                        self._current_user_input = response['user_transcription']
+                        logging.debug(f"User said: {self._current_user_input}")
+                    
+                    # Display text response and record exchange
                     if 'text' in response:
                         print(f"💋 Sakura: {response['text']}")
+                        
+                        # Record exchange to conversation context
+                        # Use captured transcription or a placeholder
+                        user_input = self._current_user_input if self._current_user_input else "[voice input]"
+                        await self.conversation_context.add_exchange(
+                            user_input=user_input,
+                            ai_response=response['text'],
+                            tools_used=self._current_tools_used.copy() if self._current_tools_used else None
+                        )
+                        # Reset tracking for next exchange
+                        self._current_user_input = ""
+                        self._current_tools_used = []
                     
                     # Handle interruption - clear audio queue
                     if response.get('interrupted'):
@@ -321,13 +430,25 @@ COMMON MCP SERVERS (run with windows run_command "uvx <server>"):
                 await asyncio.sleep(0.1)
     
     async def _handle_function_calls(self, function_calls):
-        """Handle function calls from Gemini using tool registry"""
+        """Handle function calls from Gemini using tool registry with error recovery"""
         for fc in function_calls:
             tool_name = fc.name
             tool_args = fc.args if hasattr(fc, 'args') else {}
             call_id = fc.id if hasattr(fc, 'id') else tool_name
             
+            # Apply user preferences to arguments
+            action = tool_args.get('action', 'unknown')
+            tool_args = await self.user_preferences.apply_preferences_to_args(
+                tool_name, action, tool_args
+            )
+            
             logging.info(f"🔧 Tool call: {tool_name} with args: {tool_args}")
+            
+            # Track tool usage for conversation context
+            self._current_tools_used.append(tool_name)
+            
+            # Record last action for correction context
+            await self.user_preferences.record_last_action(tool_name, action, tool_args)
             
             # Execute tool via registry
             result = await self.tool_registry.execute_tool(tool_name, **tool_args)
@@ -335,11 +456,56 @@ COMMON MCP SERVERS (run with windows run_command "uvx <server>"):
             # Log action to memory for history
             await self._log_action(tool_name, tool_args, result)
             
+            # Infer preferences from successful actions
+            if result.status.value == "success":
+                await self.user_preferences.infer_preference_from_action(
+                    tool_name, action, tool_args, True
+                )
+            
             # Format result for Gemini
             if result.status.value == "success":
                 response_text = result.message or str(result.data)
             else:
-                response_text = f"Error: {result.error or result.message}"
+                error_msg = result.error or result.message
+                
+                # Attempt error recovery
+                recovery_result = await self.error_recovery.attempt_recovery(
+                    tool_name=tool_name,
+                    action=tool_args.get('action', 'unknown'),
+                    args={k: v for k, v in tool_args.items() if k != 'action'},
+                    error_message=error_msg,
+                    executor=lambda name, args: self.tool_registry.execute_tool(name, **args)
+                )
+                
+                if recovery_result.success:
+                    response_text = f"Recovered after {recovery_result.retries_used} retries: {recovery_result.result}"
+                    logging.info(f"🔄 Recovery succeeded for {tool_name}")
+                else:
+                    response_text = f"Error: {error_msg}"
+                    if recovery_result.suggestion:
+                        response_text += f"\n\nSuggestion: {recovery_result.suggestion}"
+                    
+                    # Track failed action in conversation context
+                    await self.conversation_context.add_failed_action(
+                        action=f"{tool_name}.{tool_args.get('action', 'unknown')}",
+                        error=error_msg,
+                        context=tool_args
+                    )
+                    
+                    # Get proactive suggestion for the error
+                    error_suggestion = await self.suggestion_engine.get_suggestion(
+                        recent_error=error_msg
+                    )
+                    if error_suggestion:
+                        response_text += f"\n\n💡 {error_suggestion.message}"
+            
+            # Check for follow-up suggestions on success
+            if result.status.value == "success":
+                follow_up = await self.suggestion_engine.get_follow_up_suggestion(
+                    tool_name, action, result.data if hasattr(result, 'data') else None
+                )
+                if follow_up:
+                    response_text += f"\n\n💡 {follow_up.message}"
             
             logging.info(f"🔧 Tool result: {response_text[:100]}...")
             
@@ -457,6 +623,26 @@ COMMON MCP SERVERS (run with windows run_command "uvx <server>"):
         
         if self.tool_registry:
             await self.tool_registry.cleanup_all()
+        
+        # Save conversation context before shutdown
+        if self.conversation_context:
+            await self.conversation_context.cleanup()
+        
+        # Save error recovery history
+        if self.error_recovery:
+            await self.error_recovery.cleanup()
+        
+        # Save user preferences
+        if self.user_preferences:
+            await self.user_preferences.cleanup()
+        
+        # Save suggestion history
+        if self.suggestion_engine:
+            await self.suggestion_engine.cleanup()
+        
+        # Save intent parser learning
+        if self.intent_parser:
+            await self.intent_parser.cleanup()
         
         if self.wake_detector:
             self.wake_detector.cleanup()

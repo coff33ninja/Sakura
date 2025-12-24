@@ -1,6 +1,5 @@
 {
-  "_comment": "MCP Server Configuration - Use uvx (Python) or npx (Node.js)",
-  "_install_note": "Install uv: https://docs.astral.sh/uv/getting-started/installation/",
+  "_comment": "MCP Server Configuration for Sakura - Run with uvx (Python)",
   "servers": {
     "time": {
       "_comment": "Time and timezone tools",
@@ -13,22 +12,29 @@
       "command": ["uvx", "mcp-server-fetch"]
     },
     "filesystem": {
-      "_comment": "File system access - CHANGE ROOT PATH",
+      "_comment": "File system access - change root as needed",
       "type": "stdio",
-      "command": ["uvx", "mcp-server-filesystem", "--root", "C:/Users/YourName/Documents"]
+      "command": ["uvx", "mcp-server-filesystem", "--root", "C:/"]
     },
     "memory": {
-      "_comment": "Persistent memory store",
+      "_comment": "Persistent memory store for context",
       "type": "stdio",
       "command": ["uvx", "mcp-server-memory"]
     },
     "sequential-thinking": {
       "_comment": "Dynamic problem-solving through thought sequences",
       "type": "stdio",
-      "command": ["npx", "-y", "@modelcontextprotocol/server-sequential-thinking"]
-    },
+      "command": [
+        "npx",
+        "-y",
+        "@modelcontextprotocol/server-sequential-thinking"
+      ]
+    }
+  },
+  "_optional_servers": {
+    "_comment": "Uncomment and configure these as needed",
     "brave-search": {
-      "_comment": "Web search - Get key from https://brave.com/search/api/",
+      "_comment": "Brave search API - requires BRAVE_API_KEY env var",
       "type": "stdio",
       "command": ["uvx", "mcp-server-brave-search"],
       "env": {
@@ -36,7 +42,7 @@
       }
     },
     "github": {
-      "_comment": "GitHub integration",
+      "_comment": "GitHub integration - requires GITHUB_TOKEN env var",
       "type": "stdio",
       "command": ["npx", "-y", "@modelcontextprotocol/server-github"],
       "env": {
@@ -46,12 +52,22 @@
     "sqlite": {
       "_comment": "SQLite database access",
       "type": "stdio",
-      "command": ["uvx", "mcp-server-sqlite", "--db-path", "path/to/database.db"]
+      "command": [
+        "uvx",
+        "mcp-server-sqlite",
+        "--db-path",
+        "path/to/database.db"
+      ]
     },
     "postgres": {
       "_comment": "PostgreSQL database access",
       "type": "stdio",
-      "command": ["npx", "-y", "@modelcontextprotocol/server-postgres", "postgresql://localhost/mydb"]
+      "command": [
+        "npx",
+        "-y",
+        "@modelcontextprotocol/server-postgres",
+        "postgresql://localhost/mydb"
+      ]
     },
     "puppeteer": {
       "_comment": "Browser automation",
@@ -59,16 +75,16 @@
       "command": ["npx", "-y", "@modelcontextprotocol/server-puppeteer"]
     },
     "slack": {
-      "_comment": "Slack workspace integration",
+      "_comment": "Slack integration - requires SLACK_BOT_TOKEN and SLACK_TEAM_ID",
       "type": "stdio",
       "command": ["npx", "-y", "@modelcontextprotocol/server-slack"],
       "env": {
-        "SLACK_BOT_TOKEN": "xoxb-your-token",
-        "SLACK_TEAM_ID": "T0123456789"
+        "SLACK_BOT_TOKEN": "your_slack_bot_token",
+        "SLACK_TEAM_ID": "your_team_id"
       }
     },
     "google-maps": {
-      "_comment": "Google Maps location services",
+      "_comment": "Google Maps - requires GOOGLE_MAPS_API_KEY",
       "type": "stdio",
       "command": ["npx", "-y", "@modelcontextprotocol/server-google-maps"],
       "env": {
@@ -79,16 +95,6 @@
       "_comment": "Windows Everything search (requires Everything installed)",
       "type": "stdio",
       "command": ["npx", "-y", "mcp-server-everything"]
-    },
-    "youtube": {
-      "_comment": "YouTube video info and transcripts",
-      "type": "stdio",
-      "command": ["uvx", "mcp-youtube"]
-    },
-    "obsidian": {
-      "_comment": "Obsidian vault access",
-      "type": "stdio",
-      "command": ["npx", "-y", "mcp-obsidian", "/path/to/vault"]
     }
   }
 }

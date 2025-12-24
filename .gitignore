@@ -10,6 +10,10 @@ env-temp keys.txt
 *.pem
 *.key
 
+# Personal notes and todos
+TODO.md
+NOTES.md
+
 # Python
 __pycache__/
 *.py[cod]
@@ -66,3 +70,4 @@ backups/*.zip
 # Test files
 test_*.py
 !test_live.py
+backups/sakura_wake_word/Sakura_en_windows_v4_0_0.ppn

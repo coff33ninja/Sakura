@@ -94,6 +94,17 @@ class GeminiVoiceClient:
             logging.error(f"Error sending audio: {e}")
             await self._handle_api_error(e)
     
+    async def send_text(self, text: str, end_of_turn: bool = True):
+        """Send text input to Gemini to trigger a voice response"""
+        if not self.is_connected or not self.session:
+            return
+            
+        try:
+            await self.session.send(input=text, end_of_turn=end_of_turn)
+        except Exception as e:
+            logging.error(f"Error sending text: {e}")
+            await self._handle_api_error(e)
+    
     async def receive_responses(self) -> AsyncGenerator[Dict[str, Any], None]:
         """Receive responses from Gemini with error handling"""
         if not self.is_connected or not self.session:
@@ -118,6 +129,14 @@ class GeminiVoiceClient:
                                 response_data['audio'] = part.inline_data.data
                             if hasattr(part, 'text') and part.text:
                                 response_data['text'] = part.text
+                    
+                    # Handle user transcription if available (input_transcription)
+                    if hasattr(response, 'server_content') and response.server_content:
+                        if hasattr(response.server_content, 'input_transcription') and response.server_content.input_transcription:
+                            response_data['user_transcription'] = response.server_content.input_transcription
+                        # Also check for turn_complete which may have transcription
+                        if hasattr(response.server_content, 'turn_complete') and response.server_content.turn_complete:
+                            response_data['turn_complete'] = True
                     
                     # Handle session resumption updates
                     if (hasattr(response, 'session_resumption_update') and 

@@ -13,6 +13,7 @@ class AsyncConfigLoader:
     def __init__(self, config_file: str = "app_config.json"):
         self.config_file = config_file
         self._lock = asyncio.Lock()
+        self._cached_config: Optional[AppConfig] = None
     
     async def load_config(self) -> AppConfig:
         """Load configuration from file and environment"""
@@ -36,6 +37,9 @@ class AsyncConfigLoader:
             # Environment variables always override file config
             self._update_config_from_env(config)
             
+            # Cache the loaded config
+            self._cached_config = config
+            
             return config
     
     async def save_config(self, config: AppConfig):
@@ -48,10 +52,26 @@ class AsyncConfigLoader:
                 async with aiofiles.open(self.config_file, 'w') as f:
                     await f.write(json.dumps(config_dict, indent=2))
                 
+                # Update cache
+                self._cached_config = config
                 logging.info(f"Configuration saved to {self.config_file}")
                 
             except Exception as e:
                 logging.error(f"Failed to save config: {e}")
+    
+    def get_cached_config(self) -> Optional[AppConfig]:
+        """Get the cached config without reloading from file"""
+        return self._cached_config
+    
+    def config_to_full_dict(self, config: AppConfig) -> Dict[str, Any]:
+        """Convert entire config to dict using asdict (includes all fields)"""
+        full_dict = asdict(config)
+        # Remove sensitive keys
+        if 'wake_word' in full_dict and 'access_key' in full_dict['wake_word']:
+            full_dict['wake_word']['access_key'] = '***' if full_dict['wake_word']['access_key'] else None
+        if 'gemini' in full_dict and 'api_key' in full_dict['gemini']:
+            full_dict['gemini']['api_key'] = '***' if full_dict['gemini']['api_key'] else None
+        return full_dict
     
     def _config_to_safe_dict(self, config: AppConfig) -> Dict[str, Any]:
         """Convert config to dict excluding sensitive data"""
@@ -109,7 +129,17 @@ class AsyncConfigLoader:
         if os.getenv('WAKE_WORD_ENABLED'):
             config.wake_word.enabled = os.getenv('WAKE_WORD_ENABLED').lower() == 'true'
         if os.getenv('WAKE_WORD_KEYWORDS'):
-            config.wake_word.keywords = os.getenv('WAKE_WORD_KEYWORDS').split(',')
+            # Explicit keywords override everything
+            config.wake_word.keywords = [k.strip() for k in os.getenv('WAKE_WORD_KEYWORDS').split(',')]
+        elif os.getenv('ASSISTANT_NAME'):
+            # Use assistant name as wake word if it's a built-in
+            name = os.getenv('ASSISTANT_NAME').lower()
+            builtin = ["alexa", "americano", "blueberry", "bumblebee", "computer", 
+                      "grapefruit", "grasshopper", "hey barista", "hey google", 
+                      "hey siri", "jarvis", "ok google", "pico clock", "picovoice", 
+                      "porcupine", "terminator"]
+            if name in builtin:
+                config.wake_word.keywords = [name]
         
         # Gemini settings
         if os.getenv('GEMINI_MODEL'):

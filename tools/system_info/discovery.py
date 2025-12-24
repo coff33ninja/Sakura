@@ -220,29 +220,208 @@ class SystemDiscovery(BaseTool):
         except Exception as e:
             return ToolResult(status=ToolStatus.ERROR, error=str(e))
     
-    async def _get_hardware(self) -> ToolResult:
-        """Get hardware information"""
+    async def _get_hardware(self, detail_level: str = "basic") -> ToolResult:
+        """Get hardware information
+        
+        Args:
+            detail_level: "basic" for summary, "full" for detailed specs
+        """
         try:
-            cmd = '''
-            $hw = @{
-                CPU = (Get-CimInstance Win32_Processor).Name
-                Cores = (Get-CimInstance Win32_Processor).NumberOfCores
-                Threads = (Get-CimInstance Win32_Processor).NumberOfLogicalProcessors
-                RAM_GB = [math]::Round((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory / 1GB, 1)
-                GPU = (Get-CimInstance Win32_VideoController).Name
-                Motherboard = (Get-CimInstance Win32_BaseBoard).Product
-                BIOS = (Get-CimInstance Win32_BIOS).SMBIOSBIOSVersion
-            }
-            $hw | ConvertTo-Json
-            '''
+            if detail_level == "full":
+                # Detailed hardware info
+                cmd = '''
+                $hw = @{}
+                
+                # CPU Details
+                $cpu = Get-CimInstance Win32_Processor
+                $hw.CPU = @{
+                    Name = $cpu.Name
+                    Manufacturer = $cpu.Manufacturer
+                    Cores = $cpu.NumberOfCores
+                    Threads = $cpu.NumberOfLogicalProcessors
+                    MaxClockSpeedMHz = $cpu.MaxClockSpeed
+                    CurrentClockSpeedMHz = $cpu.CurrentClockSpeed
+                    L2CacheKB = $cpu.L2CacheSize
+                    L3CacheKB = $cpu.L3CacheSize
+                    Architecture = $cpu.Architecture
+                    Socket = $cpu.SocketDesignation
+                }
+                
+                # RAM Details
+                $ram = Get-CimInstance Win32_PhysicalMemory
+                $hw.RAM = @{
+                    TotalGB = [math]::Round((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory / 1GB, 2)
+                    Slots = @()
+                }
+                foreach ($stick in $ram) {
+                    $hw.RAM.Slots += @{
+                        CapacityGB = [math]::Round($stick.Capacity / 1GB, 2)
+                        SpeedMHz = $stick.Speed
+                        Manufacturer = $stick.Manufacturer
+                        PartNumber = $stick.PartNumber.Trim()
+                        FormFactor = switch ($stick.FormFactor) {
+                            8 { "DIMM" }
+                            12 { "SODIMM" }
+                            default { $stick.FormFactor }
+                        }
+                        MemoryType = switch ($stick.SMBIOSMemoryType) {
+                            20 { "DDR" }
+                            21 { "DDR2" }
+                            22 { "DDR2 FB-DIMM" }
+                            24 { "DDR3" }
+                            26 { "DDR4" }
+                            34 { "DDR5" }
+                            default { "Type $($stick.SMBIOSMemoryType)" }
+                        }
+                        BankLabel = $stick.BankLabel
+                        DeviceLocator = $stick.DeviceLocator
+                    }
+                }
+                
+                # GPU Details - use nvidia-smi for accurate VRAM on NVIDIA cards
+                $gpus = Get-CimInstance Win32_VideoController
+                $hw.GPU = @()
+                
+                # Try nvidia-smi for NVIDIA GPUs (more accurate VRAM)
+                $nvidiaSmi = $null
+                try {
+                    $nvidiaSmi = nvidia-smi --query-gpu=name,memory.total,driver_version,temperature.gpu,utilization.gpu,power.draw --format=csv,noheader,nounits 2>$null
+                } catch {}
+                
+                $nvidiaInfo = @{}
+                if ($nvidiaSmi) {
+                    $lines = $nvidiaSmi -split "`n"
+                    foreach ($line in $lines) {
+                        if ($line.Trim()) {
+                            $parts = $line -split ","
+                            if ($parts.Count -ge 2) {
+                                $gpuName = $parts[0].Trim()
+                                $nvidiaInfo[$gpuName] = @{
+                                    VRAM_MB = [int]$parts[1].Trim()
+                                    DriverVersion = if ($parts.Count -ge 3) { $parts[2].Trim() } else { $null }
+                                    Temperature = if ($parts.Count -ge 4) { $parts[3].Trim() } else { $null }
+                                    Utilization = if ($parts.Count -ge 5) { $parts[4].Trim() } else { $null }
+                                    PowerDraw = if ($parts.Count -ge 6) { $parts[5].Trim() } else { $null }
+                                }
+                            }
+                        }
+                    }
+                }
+                
+                foreach ($gpu in $gpus) {
+                    $gpuData = @{
+                        Name = $gpu.Name
+                        Manufacturer = $gpu.AdapterCompatibility
+                        DriverVersion = $gpu.DriverVersion
+                        DriverDate = $gpu.DriverDate
+                        CurrentResolution = "$($gpu.CurrentHorizontalResolution)x$($gpu.CurrentVerticalResolution)"
+                        RefreshRate = $gpu.CurrentRefreshRate
+                        VideoProcessor = $gpu.VideoProcessor
+                        Status = $gpu.Status
+                    }
+                    
+                    # Use nvidia-smi data if available for this GPU
+                    if ($nvidiaInfo.ContainsKey($gpu.Name)) {
+                        $nv = $nvidiaInfo[$gpu.Name]
+                        $gpuData.VRAM_GB = [math]::Round($nv.VRAM_MB / 1024, 2)
+                        $gpuData.VRAM_MB = $nv.VRAM_MB
+                        if ($nv.Temperature) { $gpuData.Temperature_C = [int]$nv.Temperature }
+                        if ($nv.Utilization) { $gpuData.Utilization_Percent = [int]$nv.Utilization }
+                        if ($nv.PowerDraw) { $gpuData.PowerDraw_W = [math]::Round([double]$nv.PowerDraw, 1) }
+                    } else {
+                        # Fallback to WMI (may be inaccurate for >4GB)
+                        $gpuData.VRAM_GB = [math]::Round($gpu.AdapterRAM / 1GB, 2)
+                        $gpuData.VRAM_Note = "WMI value - may be inaccurate for GPUs >4GB"
+                    }
+                    
+                    $hw.GPU += $gpuData
+                }
+                
+                # Motherboard
+                $mb = Get-CimInstance Win32_BaseBoard
+                $hw.Motherboard = @{
+                    Manufacturer = $mb.Manufacturer
+                    Product = $mb.Product
+                    SerialNumber = $mb.SerialNumber
+                    Version = $mb.Version
+                }
+                
+                # BIOS
+                $bios = Get-CimInstance Win32_BIOS
+                $hw.BIOS = @{
+                    Manufacturer = $bios.Manufacturer
+                    Version = $bios.SMBIOSBIOSVersion
+                    ReleaseDate = $bios.ReleaseDate
+                    SerialNumber = $bios.SerialNumber
+                }
+                
+                # Storage
+                $disks = Get-CimInstance Win32_DiskDrive
+                $hw.Storage = @()
+                foreach ($disk in $disks) {
+                    $hw.Storage += @{
+                        Model = $disk.Model
+                        SizeGB = [math]::Round($disk.Size / 1GB, 2)
+                        InterfaceType = $disk.InterfaceType
+                        MediaType = $disk.MediaType
+                        SerialNumber = $disk.SerialNumber
+                        Partitions = $disk.Partitions
+                    }
+                }
+                
+                # Battery (for laptops)
+                $battery = Get-CimInstance Win32_Battery
+                if ($battery) {
+                    $hw.Battery = @{
+                        Name = $battery.Name
+                        Status = $battery.Status
+                        EstimatedChargeRemaining = $battery.EstimatedChargeRemaining
+                        BatteryStatus = switch ($battery.BatteryStatus) {
+                            1 { "Discharging" }
+                            2 { "AC Power" }
+                            3 { "Fully Charged" }
+                            4 { "Low" }
+                            5 { "Critical" }
+                            default { $battery.BatteryStatus }
+                        }
+                    }
+                }
+                
+                $hw | ConvertTo-Json -Depth 4
+                '''
+            else:
+                # Basic hardware info
+                cmd = '''
+                $hw = @{
+                    CPU = (Get-CimInstance Win32_Processor).Name
+                    Cores = (Get-CimInstance Win32_Processor).NumberOfCores
+                    Threads = (Get-CimInstance Win32_Processor).NumberOfLogicalProcessors
+                    RAM_GB = [math]::Round((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory / 1GB, 1)
+                    GPU = (Get-CimInstance Win32_VideoController).Name
+                    Motherboard = (Get-CimInstance Win32_BaseBoard).Product
+                    BIOS = (Get-CimInstance Win32_BIOS).SMBIOSBIOSVersion
+                }
+                $hw | ConvertTo-Json
+                '''
             
-            result = await self._run_ps(cmd)
+            result = await self._run_ps(cmd, timeout=60)
             if result:
                 hw = json.loads(result)
+                
+                if detail_level == "full":
+                    # Build summary message
+                    cpu_name = hw.get('CPU', {}).get('Name', 'Unknown')
+                    ram_total = hw.get('RAM', {}).get('TotalGB', '?')
+                    gpu_list = hw.get('GPU', [])
+                    gpu_name = gpu_list[0].get('Name', 'Unknown') if gpu_list else 'Unknown'
+                    msg = f"CPU: {cpu_name}, RAM: {ram_total}GB, GPU: {gpu_name}"
+                else:
+                    msg = f"CPU: {hw.get('CPU', 'Unknown')}, RAM: {hw.get('RAM_GB', '?')}GB"
+                
                 return ToolResult(
                     status=ToolStatus.SUCCESS,
                     data=hw,
-                    message=f"CPU: {hw.get('CPU', 'Unknown')}, RAM: {hw.get('RAM_GB', '?')}GB"
+                    message=msg
                 )
             
             return ToolResult(status=ToolStatus.ERROR, error="Could not get hardware info")
@@ -456,33 +635,123 @@ class SystemDiscovery(BaseTool):
             return ToolResult(status=ToolStatus.ERROR, error=str(e))
     
     async def _get_display_info(self) -> ToolResult:
-        """Get display/monitor information"""
+        """Get detailed display/monitor information including multi-monitor setup and mouse position"""
         try:
             if self.is_windows:
-                user32 = ctypes.windll.user32
-                width = user32.GetSystemMetrics(0)
-                height = user32.GetSystemMetrics(1)
+                # Get mouse position using ctypes
+                class POINT(ctypes.Structure):
+                    _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
                 
+                user32 = ctypes.windll.user32
+                
+                # Primary screen size (virtual screen for multi-monitor)
+                primary_width = user32.GetSystemMetrics(0)  # SM_CXSCREEN
+                primary_height = user32.GetSystemMetrics(1)  # SM_CYSCREEN
+                
+                # Virtual screen (all monitors combined)
+                virtual_left = user32.GetSystemMetrics(76)   # SM_XVIRTUALSCREEN
+                virtual_top = user32.GetSystemMetrics(77)    # SM_YVIRTUALSCREEN
+                virtual_width = user32.GetSystemMetrics(78)  # SM_CXVIRTUALSCREEN
+                virtual_height = user32.GetSystemMetrics(79) # SM_CYVIRTUALSCREEN
+                
+                # Number of monitors
+                monitor_count = user32.GetSystemMetrics(80)  # SM_CMONITORS
+                
+                # Get current mouse position
+                pt = POINT()
+                user32.GetCursorPos(ctypes.byref(pt))
+                mouse_x, mouse_y = pt.x, pt.y
+                
+                # Get detailed monitor info via PowerShell
                 cmd = '''
-                Get-CimInstance Win32_VideoController | 
-                Select-Object Name, CurrentHorizontalResolution, CurrentVerticalResolution, CurrentRefreshRate, AdapterRAM |
-                ConvertTo-Json
+                Add-Type -AssemblyName System.Windows.Forms
+                $monitors = [System.Windows.Forms.Screen]::AllScreens
+                $result = @{
+                    Monitors = @()
+                    MousePosition = @{
+                        X = [System.Windows.Forms.Cursor]::Position.X
+                        Y = [System.Windows.Forms.Cursor]::Position.Y
+                    }
+                }
+                
+                $index = 0
+                foreach ($mon in $monitors) {
+                    $monInfo = @{
+                        Index = $index
+                        DeviceName = $mon.DeviceName
+                        IsPrimary = $mon.Primary
+                        Bounds = @{
+                            X = $mon.Bounds.X
+                            Y = $mon.Bounds.Y
+                            Width = $mon.Bounds.Width
+                            Height = $mon.Bounds.Height
+                            Right = $mon.Bounds.X + $mon.Bounds.Width
+                            Bottom = $mon.Bounds.Y + $mon.Bounds.Height
+                        }
+                        WorkingArea = @{
+                            X = $mon.WorkingArea.X
+                            Y = $mon.WorkingArea.Y
+                            Width = $mon.WorkingArea.Width
+                            Height = $mon.WorkingArea.Height
+                        }
+                        BitsPerPixel = $mon.BitsPerPixel
+                    }
+                    $result.Monitors += $monInfo
+                    $index++
+                }
+                
+                # Determine which monitor the mouse is on
+                $mouseX = $result.MousePosition.X
+                $mouseY = $result.MousePosition.Y
+                $result.MouseOnMonitor = -1
+                
+                foreach ($mon in $result.Monitors) {
+                    $b = $mon.Bounds
+                    if ($mouseX -ge $b.X -and $mouseX -lt $b.Right -and $mouseY -ge $b.Y -and $mouseY -lt $b.Bottom) {
+                        $result.MouseOnMonitor = $mon.Index
+                        $result.MouseRelativePosition = @{
+                            X = $mouseX - $b.X
+                            Y = $mouseY - $b.Y
+                        }
+                        break
+                    }
+                }
+                
+                $result | ConvertTo-Json -Depth 4
                 '''
                 
                 result = await self._run_ps(cmd)
-                displays = []
+                display_data = {
+                    "monitor_count": monitor_count,
+                    "primary_resolution": f"{primary_width}x{primary_height}",
+                    "virtual_screen": {
+                        "left": virtual_left,
+                        "top": virtual_top,
+                        "width": virtual_width,
+                        "height": virtual_height,
+                        "right": virtual_left + virtual_width,
+                        "bottom": virtual_top + virtual_height
+                    },
+                    "mouse_position": {"x": mouse_x, "y": mouse_y}
+                }
+                
                 if result:
-                    displays = json.loads(result)
-                    if isinstance(displays, dict):
-                        displays = [displays]
+                    try:
+                        ps_data = json.loads(result)
+                        display_data["monitors"] = ps_data.get("Monitors", [])
+                        display_data["mouse_on_monitor"] = ps_data.get("MouseOnMonitor", 0)
+                        display_data["mouse_relative_position"] = ps_data.get("MouseRelativePosition", {"X": mouse_x, "Y": mouse_y})
+                    except json.JSONDecodeError:
+                        pass
+                
+                # Build helpful message
+                mouse_mon = display_data.get("mouse_on_monitor", 0)
+                msg = f"{monitor_count} monitor(s), mouse at ({mouse_x}, {mouse_y}) on monitor {mouse_mon}"
                 
                 return ToolResult(
                     status=ToolStatus.SUCCESS,
-                    data={
-                        "primary_resolution": f"{width}x{height}",
-                        "displays": displays
-                    },
-                    message=f"Primary display: {width}x{height}"
+                    data=display_data,
+                    message=msg
                 )
             
             return ToolResult(status=ToolStatus.ERROR, error="Not on Windows")
@@ -537,6 +806,11 @@ class SystemDiscovery(BaseTool):
                         "type": "string",
                         "enum": ["all", "browsers", "dev", "media", "games", "communication"],
                         "description": "App category filter for list_installed_apps"
+                    },
+                    "detail_level": {
+                        "type": "string",
+                        "enum": ["basic", "full"],
+                        "description": "Detail level for get_hardware: basic (summary) or full (complete specs including RAM type, GPU VRAM, storage details)"
                     },
                     "query": {"type": "string", "description": "Search query for search_apps"},
                     "path": {"type": "string", "description": "Folder path for explore_folder"},

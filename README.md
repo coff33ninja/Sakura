@@ -9,20 +9,23 @@
 ### 🎙️ Real-Time Voice Conversation
 - **Gemini Live API** - Natural, low-latency voice interaction
 - **Interruption support** - Talk naturally, interrupt anytime
-- **Multiple voices** - Aoede, Kore, Leda, Fenrir
-- **Configurable personalities** - Flirty, Friendly, Romantic, Tsundere
+- **Multiple voices** - Female (Aoede, Kore), Male (Charon, Fenrir), Neutral (Puck)
+- **Configurable personalities** - Female & Male personas with gender-matched voices
+- **Voice/Persona validation** - Warns if voice gender doesn't match persona
 
-### 🖥️ Complete Windows Control (29 Actions)
+### Complete Windows Control (41 Actions)
 - **Run commands** - PowerShell, CMD, any command
 - **App control** - Open, close, focus, minimize, maximize windows
-- **Mouse control** - Move cursor, click, double-click
+- **Mouse control** - Move cursor, click, double-click, multi-monitor aware
+- **Smart clicking** - Find and click buttons by name (OK, Cancel, Close, Accept)
+- **Context awareness** - Know what's under the cursor (UI element, window, monitor)
 - **Media control** - Play, pause, next, prev, volume up/down/mute
 - **File operations** - Read, write, delete files and folders
 - **Search** - Find files across ALL drives
 - **Screenshots** - Capture screen anytime
 - **Clipboard** - Get/set clipboard content
 - **Process management** - List, kill processes
-- **System info** - Memory, CPU, hardware stats
+- **Screen reading** - UI Automation, OCR, element inspection
 
 ### 📝 Script Generation & Execution
 - **Sandbox folder** - All scripts saved to `~/Documents/Sakura/scripts/`
@@ -42,7 +45,8 @@
 
 ### 🔍 System Discovery (15 Actions)
 - **PC info** - Computer name, username, OS
-- **Hardware** - CPU, RAM, GPU, drives
+- **Hardware** - Full specs: CPU, RAM (type, speed, slots), GPU (VRAM via nvidia-smi), storage
+- **Multi-monitor** - Detect all displays, primary/secondary, resolution, mouse position per monitor
 - **Installed apps** - Search by category (browsers, dev, media, games)
 - **Running processes** - See what's active
 - **Network info** - Adapters, IPs, DNS
@@ -89,8 +93,23 @@ GEMINI_API_KEY=your_primary_key
 GEMINI_API_KEY_2=your_backup_key
 GEMINI_API_KEY_3=another_backup_key
 
-# Personality: flirty, friendly, romantic, tsundere
+# Assistant Name (used in prompts and as wake word if built-in)
+ASSISTANT_NAME=Sakura
+
+# Personality Mode
+# Female: flirty, friendly, romantic, tsundere
+# Male: flirty_m, friendly_m, romantic_m, kuudere
 SAKURA_PERSONALITY=friendly
+
+# Voice (should match persona gender!)
+# Female: Aoede (warm), Kore (soft)
+# Male: Charon (deep), Fenrir (energetic)
+# Neutral: Puck (works with any persona)
+VOICE_NAME=Aoede
+
+# Wake Word (optional - overrides ASSISTANT_NAME)
+# Built-in: alexa, jarvis, computer, hey google, hey siri, etc.
+WAKE_WORD_KEYWORDS=jarvis
 
 # Optional - Wake word detection
 PICOVOICE_ACCESS_KEY=your_picovoice_key
@@ -131,8 +150,8 @@ HOME_ASSISTANT_TOKEN=your_ha_token
 
 | Tool | Actions | Description |
 |------|---------|-------------|
-| `windows` | 29 | Full Windows control |
-| `system_info` | 15 | System discovery |
+| `windows` | 41 | Full Windows control, smart clicking, screen reading |
+| `system_info` | 15 | System discovery, hardware specs, multi-monitor |
 | `memory` | 16 | Persistent memory |
 | `web_search` | 1 | DuckDuckGo search |
 | `web_fetch` | 1 | URL content extraction |
@@ -140,7 +159,7 @@ HOME_ASSISTANT_TOKEN=your_ha_token
 | `smart_home` | 6 | Home Assistant |
 | `mcp_client` | 3 | MCP server connection |
 
-**Total: 76 tool actions**
+**Total: 88 tool actions**
 
 ## 📁 Project Structure
 
@@ -172,20 +191,59 @@ sakura-ai/
 
 ### Personality Modes
 
-| Mode | Description |
-|------|-------------|
-| `friendly` | Warm, helpful assistant (default) |
-| `flirty` | Playful, affectionate girlfriend |
-| `romantic` | Sweet, caring partner (PG-13) |
-| `tsundere` | Classic anime tsundere |
+| Mode | Gender | Description |
+|------|--------|-------------|
+| `friendly` | Neutral | Warm, helpful assistant (default) |
+| `flirty` | Female | Playful, affectionate girlfriend |
+| `romantic` | Female | Sweet, caring partner (PG-13) |
+| `tsundere` | Female | Classic anime tsundere |
+| `friendly_m` | Neutral | Warm, helpful male assistant |
+| `flirty_m` | Male | Charming, affectionate boyfriend |
+| `romantic_m` | Male | Sweet, caring boyfriend (PG-13) |
+| `kuudere` | Male | Cool, calm but secretly caring |
 
 ### Voice Options
 
-Available voices: `Aoede`, `Kore`, `Leda`, `Fenrir`
+| Voice | Gender | Description |
+|-------|--------|-------------|
+| `Aoede` | Female | Warm, friendly (default) |
+| `Kore` | Female | Soft, gentle |
+| `Charon` | Male | Deep, calm |
+| `Fenrir` | Male | Energetic |
+| `Puck` | Neutral | Playful (works with any persona) |
+
+> ⚠️ **Voice/Persona Matching**: On startup, Sakura warns if voice gender doesn't match persona gender. For example, using `Charon` (male voice) with `flirty` (female persona) will show a warning.
+
+### Wake Word Options
+
+Built-in wake words (no training needed):
+`alexa`, `americano`, `blueberry`, `bumblebee`, `computer`, `grapefruit`, `grasshopper`, `hey barista`, `hey google`, `hey siri`, `jarvis`, `ok google`, `pico clock`, `picovoice`, `porcupine`, `terminator`
+
+**Custom Wake Words:**
+1. Train your keyword at [Picovoice Console](https://console.picovoice.ai/)
+2. Download the `.ppn` file for Windows
+3. Set in `.env`:
+```env
+WAKE_WORD_KEYWORDS=sakura
+WAKE_WORD_PATH=path/to/Sakura_en_windows_v4_0_0.ppn
+```
+
+**GPU Acceleration:**
+Porcupine v4 supports GPU acceleration. Set device in `.env`:
+```env
+# Auto-select best device (default)
+PORCUPINE_DEVICE=best
+
+# Force GPU
+PORCUPINE_DEVICE=gpu:0
+
+# Force CPU with thread count
+PORCUPINE_DEVICE=cpu:8
+```
 
 ### Script Sandbox
 
-All scripts are saved to: `C:\Users\<YourName>\Documents\Sakura\scripts\`
+All scripts are saved to: `C:\Users\<YourName>\Documents\<AssistantName>\scripts\`
 
 Organized by type:
 - `/powershell/` - PowerShell scripts (.ps1)
@@ -217,6 +275,21 @@ Sakura automatically remembers:
 - API keys stored only in `.env` file
 - No conversation audio is stored locally
 
+## ♿ Accessibility & Ethics
+
+Sakura can be a powerful tool for **accessibility** - enabling users with physical disabilities, visual impairments, or cognitive challenges to control their computers through voice alone.
+
+However, powerful tools require responsible use. Please read our full guide:
+
+📖 **[Ethics, Accessibility & Responsible Use](docs/ETHICS_AND_ACCESSIBILITY.md)**
+
+This document covers:
+- ✅ How Sakura helps users with disabilities
+- ✅ Positive use cases (productivity, learning, creative work)
+- ⚠️ Potential risks and misuse scenarios
+- 🛡️ Built-in safeguards
+- 📋 Responsible use guidelines
+
 ## 📋 Requirements
 
 ```
@@ -232,31 +305,92 @@ pygame>=2.5.0
 
 ## 🎉 Version History
 
-### v1.4 - Ultimate Windows AI
-- 29 Windows automation actions
-- 15 System discovery actions
-- 16 Memory actions with auto-logging
-- Script sandbox with multi-language support
-- Location memory for file/app discovery
-- Cross-category memory search
-- Proactive execution behavior
+### v1.0.0 - First Stable Release (2025-12-24)
 
-### v1.3 - Tools & Discord Voice
-- Full tool system with function calling
-- Discord text and voice integration
-- Web search and URL fetching
-- Smart home integration
-- MCP client support
+This is the first stable release of Sakura, consolidating all development work into a production-ready AI assistant.
 
-### v1.2 - Audio & SDK Fix
-- Google GenAI SDK 1.x compatibility
-- Correct audio sample rates (16kHz in, 24kHz out)
-- Async audio queue for smooth playback
+#### 🧠 AI Enhancement Suite
+| Module | Description |
+|--------|-------------|
+| `conversation_context.py` | Rolling conversation buffer, mood detection, topic tracking |
+| `task_chain.py` | Multi-step task execution with dependency tracking |
+| `error_recovery.py` | Intelligent error handling with retry strategies |
+| `user_preferences.py` | Learning from corrections, shortcuts, preferences |
+| `suggestions.py` | Proactive suggestions based on context/time/errors |
+| `intent_parser.py` | Natural language understanding with synonyms |
 
-### v1.1 - Async Architecture
-- Full async/aio implementation
-- Multi-key API rotation
-- Session persistence
+#### 🔧 Core Features
+- **88 Tool Actions** across 8 tool categories
+- **Real-time voice** via Gemini Live API
+- **Wake word detection** with Picovoice (GPU accelerated)
+- **Multi-key API rotation** with automatic failover
+- **Session persistence** and resumption
+- **Full async architecture** with proper cleanup
+
+#### 🖥️ Windows Integration (41 Actions)
+- App/window control, mouse/keyboard, media controls
+- File operations, process management, screenshots
+- Smart UI clicking, multi-monitor support
+- Screen reading (OCR, UI Automation)
+
+#### 📊 System Discovery (15 Actions)
+- Hardware specs (CPU, RAM, GPU with nvidia-smi)
+- Multi-monitor detection with primary flag
+- Installed/running apps, network info
+
+#### 🧠 Memory System (16 Actions)
+- Auto-logging of all actions
+- Location/script tracking
+- Cross-category search
+
+#### 🌐 Integrations
+- Web search (DuckDuckGo) & URL fetching
+- Discord (text + voice)
+- Smart Home (Home Assistant)
+- MCP Client for extended tools
+
+---
+
+<details>
+<summary>📜 Development History (Pre-1.0)</summary>
+
+#### v0.9 (v2.3) - Natural Language Understanding
+- Synonym handling, vague commands, fuzzy matching
+- Intent detection, context tracking, clarification questions
+
+#### v0.8 (v2.2) - Proactive Suggestions
+- Time/context/error-based suggestions
+- Acceptance tracking, cooldown system
+
+#### v0.7 (v2.1) - Learning from Corrections
+- Correction learning, preference detection, shortcuts
+- Preference inference from actions
+
+#### v0.6 (v2.0) - Error Recovery
+- Error categorization, retry with backoff
+- Cooldown system, user-friendly suggestions
+
+#### v0.5 (v1.9) - Task Chaining
+- Multi-step requests, dependency tracking
+- Sequential execution, chain persistence
+
+#### v0.4 (v1.8) - Conversation Context
+- Rolling buffer, mood/topic detection
+- Session persistence, context injection
+
+#### v0.3 (v1.7) - Smart UI & Multi-Monitor
+- Smart clicking, context-aware mouse
+- Detailed hardware specs, GPU stats
+
+#### v0.2 (v1.5-1.6) - Voice & Customization
+- Wake word fixes, GPU acceleration
+- Male personas, voice customization
+
+#### v0.1 (v1.1-1.4) - Foundation
+- Async architecture, tool system
+- Windows automation, memory, integrations
+
+</details>
 
 ## 📄 License
 

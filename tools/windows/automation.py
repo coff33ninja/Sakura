@@ -14,6 +14,9 @@ from pathlib import Path
 from ..base import BaseTool, ToolResult, ToolStatus
 
 
+# Get assistant name for sandbox folder
+ASSISTANT_NAME = os.getenv("ASSISTANT_NAME", "Sakura")
+
 # Windows API constants for ctypes
 if os.name == 'nt':
     user32 = ctypes.windll.user32
@@ -57,7 +60,7 @@ class WindowsAutomation(BaseTool):
         self.temp_dir: Path = Path(os.environ.get('TEMP', '.'))
         self.user_home: Path = Path.home()
         # Sandbox folder for scripts - user can review before running
-        self.sandbox_dir: Path = self.user_home / "Documents" / "Sakura" / "scripts"
+        self.sandbox_dir: Path = self.user_home / "Documents" / ASSISTANT_NAME / "scripts"
         self.sandbox_dir.mkdir(parents=True, exist_ok=True)
         self.common_paths: List[Path] = self._get_common_paths()
         self._check_everything()
@@ -141,6 +144,17 @@ class WindowsAutomation(BaseTool):
             "move_mouse": self._move_mouse,
             "click_mouse": self._click_mouse,
             "get_mouse_position": self._get_mouse_position,
+            "find_clickable_element": self._find_clickable_element,
+            "click_element_by_name": self._click_element_by_name,
+            # Screen reading actions
+            "read_screen": self._read_screen,
+            "read_window_text": self._read_window_text,
+            "get_ui_elements": self._get_ui_elements,
+            "find_ui_element": self._find_ui_element,
+            "click_ui_element": self._click_ui_element,
+            "get_focused_element": self._get_focused_element,
+            "read_window_content": self._read_window_content,
+            "read_text_at_position": self._read_text_at_position,
         }
         
         if action not in actions:
@@ -1011,23 +1025,76 @@ class WindowsAutomation(BaseTool):
         except Exception as e:
             return ToolResult(status=ToolStatus.ERROR, error=str(e))
     
-    async def _move_mouse(self, x: int, y: int, absolute: bool = True) -> ToolResult:
-        """Move mouse cursor to position using ctypes"""
+    async def _move_mouse(self, x: int, y: int, absolute: bool = True, monitor: int = None, **kwargs) -> ToolResult:
+        """Move mouse cursor to position using ctypes
+        
+        Args:
+            x: X coordinate
+            y: Y coordinate  
+            absolute: If True, use absolute screen coordinates. If False, move relative to current position.
+            monitor: If specified, x/y are relative to that monitor (0=primary, 1=second, etc.)
+        """
         try:
+            target_x, target_y = x, y
+            
+            # If monitor specified, convert to absolute coordinates
+            if monitor is not None and absolute:
+                # Get monitor info
+                monitor_info = await self._get_monitor_bounds(monitor)
+                if monitor_info:
+                    # Convert monitor-relative to absolute
+                    target_x = monitor_info['x'] + x
+                    target_y = monitor_info['y'] + y
+                    
+                    # Clamp to monitor bounds
+                    target_x = max(monitor_info['x'], min(target_x, monitor_info['x'] + monitor_info['width'] - 1))
+                    target_y = max(monitor_info['y'], min(target_y, monitor_info['y'] + monitor_info['height'] - 1))
+            
             if absolute:
                 # SetCursorPos for absolute positioning
-                user32.SetCursorPos(x, y)
+                user32.SetCursorPos(target_x, target_y)
             else:
                 # Relative movement using mouse_event
                 user32.mouse_event(MOUSEEVENTF_MOVE, x, y, 0, 0)
             
+            msg = f"Mouse moved to ({target_x}, {target_y})"
+            if monitor is not None:
+                msg += f" (monitor {monitor}: {x}, {y})"
+            
             return ToolResult(
                 status=ToolStatus.SUCCESS,
-                data={"x": x, "y": y, "absolute": absolute},
-                message=f"Mouse moved to ({x}, {y})"
+                data={"x": target_x, "y": target_y, "absolute": absolute, "monitor": monitor},
+                message=msg
             )
         except Exception as e:
             return ToolResult(status=ToolStatus.ERROR, error=str(e))
+    
+    async def _get_monitor_bounds(self, monitor_index: int) -> dict:
+        """Get bounds for a specific monitor"""
+        try:
+            cmd = f'''
+            Add-Type -AssemblyName System.Windows.Forms
+            $monitors = [System.Windows.Forms.Screen]::AllScreens
+            if ({monitor_index} -lt $monitors.Count) {{
+                $mon = $monitors[{monitor_index}]
+                @{{
+                    x = $mon.Bounds.X
+                    y = $mon.Bounds.Y
+                    width = $mon.Bounds.Width
+                    height = $mon.Bounds.Height
+                }} | ConvertTo-Json
+            }}
+            '''
+            result = await asyncio.to_thread(
+                subprocess.run,
+                ["powershell", "-NoProfile", "-Command", cmd],
+                capture_output=True, text=True, timeout=10
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                return json.loads(result.stdout.strip())
+        except Exception:
+            pass
+        return None
     
     async def _click_mouse(self, button: str = "left", double: bool = False) -> ToolResult:
         """Click mouse button using ctypes"""
@@ -1054,8 +1121,12 @@ class WindowsAutomation(BaseTool):
         except Exception as e:
             return ToolResult(status=ToolStatus.ERROR, error=str(e))
     
-    async def _get_mouse_position(self) -> ToolResult:
-        """Get current mouse cursor position"""
+    async def _get_mouse_position(self, include_context: bool = False, **kwargs) -> ToolResult:
+        """Get current mouse cursor position with optional context about what's under cursor
+        
+        Args:
+            include_context: If True, also get info about UI element under cursor
+        """
         try:
             class POINT(ctypes.Structure):
                 _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
@@ -1063,11 +1134,845 @@ class WindowsAutomation(BaseTool):
             pt = POINT()
             user32.GetCursorPos(ctypes.byref(pt))
             
+            data = {"x": pt.x, "y": pt.y}
+            
+            if include_context:
+                # Get element under cursor using UI Automation
+                context = await self._get_element_at_point(pt.x, pt.y)
+                if context:
+                    data["element_under_cursor"] = context
+                
+                # Get which monitor
+                monitor_info = await self._get_monitor_at_point(pt.x, pt.y)
+                if monitor_info:
+                    data["monitor"] = monitor_info
+            
+            msg = f"Mouse at ({pt.x}, {pt.y})"
+            if include_context and "element_under_cursor" in data:
+                elem = data["element_under_cursor"]
+                if elem.get("name"):
+                    msg += f" over '{elem.get('name')}' ({elem.get('control_type', 'unknown')})"
+            
             return ToolResult(
                 status=ToolStatus.SUCCESS,
-                data={"x": pt.x, "y": pt.y},
-                message=f"Mouse at ({pt.x}, {pt.y})"
+                data=data,
+                message=msg
             )
+        except Exception as e:
+            return ToolResult(status=ToolStatus.ERROR, error=str(e))
+    
+    async def _get_element_at_point(self, x: int, y: int) -> Optional[Dict[str, Any]]:
+        """Get UI element information at a specific point using UI Automation"""
+        try:
+            cmd = f'''
+            Add-Type -AssemblyName UIAutomationClient
+            Add-Type -AssemblyName UIAutomationTypes
+            
+            $point = New-Object System.Windows.Point({x}, {y})
+            $element = [System.Windows.Automation.AutomationElement]::FromPoint($point)
+            
+            if ($element) {{
+                $result = @{{
+                    name = $element.Current.Name
+                    control_type = $element.Current.ControlType.ProgrammaticName
+                    class_name = $element.Current.ClassName
+                    automation_id = $element.Current.AutomationId
+                    is_enabled = $element.Current.IsEnabled
+                    is_keyboard_focusable = $element.Current.IsKeyboardFocusable
+                    bounding_rect = @{{
+                        x = $element.Current.BoundingRectangle.X
+                        y = $element.Current.BoundingRectangle.Y
+                        width = $element.Current.BoundingRectangle.Width
+                        height = $element.Current.BoundingRectangle.Height
+                    }}
+                    process_id = $element.Current.ProcessId
+                }}
+                
+                # Try to get parent window info
+                try {{
+                    $walker = [System.Windows.Automation.TreeWalker]::ControlViewWalker
+                    $parent = $element
+                    while ($parent -and $parent.Current.ControlType.ProgrammaticName -ne "ControlType.Window") {{
+                        $parent = $walker.GetParent($parent)
+                    }}
+                    if ($parent) {{
+                        $result.window_title = $parent.Current.Name
+                    }}
+                }} catch {{}}
+                
+                $result | ConvertTo-Json -Depth 3
+            }}
+            '''
+            
+            result = await asyncio.to_thread(
+                subprocess.run,
+                ["powershell", "-NoProfile", "-Command", cmd],
+                capture_output=True, text=True, timeout=10
+            )
+            
+            if result.returncode == 0 and result.stdout.strip():
+                return json.loads(result.stdout.strip())
+        except Exception as e:
+            logging.debug(f"Error getting element at point: {e}")
+        return None
+    
+    async def _get_monitor_at_point(self, x: int, y: int) -> Optional[Dict[str, Any]]:
+        """Get monitor information for a specific point"""
+        try:
+            cmd = f'''
+            Add-Type -AssemblyName System.Windows.Forms
+            $monitors = [System.Windows.Forms.Screen]::AllScreens
+            $index = 0
+            foreach ($mon in $monitors) {{
+                if ({x} -ge $mon.Bounds.X -and {x} -lt ($mon.Bounds.X + $mon.Bounds.Width) -and
+                    {y} -ge $mon.Bounds.Y -and {y} -lt ($mon.Bounds.Y + $mon.Bounds.Height)) {{
+                    @{{
+                        index = $index
+                        is_primary = $mon.Primary
+                        device_name = $mon.DeviceName
+                        bounds = @{{
+                            x = $mon.Bounds.X
+                            y = $mon.Bounds.Y
+                            width = $mon.Bounds.Width
+                            height = $mon.Bounds.Height
+                        }}
+                        relative_position = @{{
+                            x = {x} - $mon.Bounds.X
+                            y = {y} - $mon.Bounds.Y
+                        }}
+                    }} | ConvertTo-Json -Depth 3
+                    break
+                }}
+                $index++
+            }}
+            '''
+            
+            result = await asyncio.to_thread(
+                subprocess.run,
+                ["powershell", "-NoProfile", "-Command", cmd],
+                capture_output=True, text=True, timeout=10
+            )
+            
+            if result.returncode == 0 and result.stdout.strip():
+                return json.loads(result.stdout.strip())
+        except Exception:
+            pass
+        return None
+    
+    async def _find_clickable_element(self, element_name: str, window_title: str = "", **kwargs) -> ToolResult:
+        """Find a clickable element by name (button, link, menu item) and return its location
+        
+        Common searches: "OK", "Cancel", "Close", "Accept", "Yes", "No", "Save", "Open", etc.
+        """
+        try:
+            # Escape quotes in search terms
+            safe_name = element_name.replace("'", "''").replace('"', '`"')
+            safe_title = window_title.replace("'", "''").replace('"', '`"') if window_title else ""
+            
+            cmd = f'''
+            Add-Type -AssemblyName UIAutomationClient
+            Add-Type -AssemblyName UIAutomationTypes
+            
+            $results = @()
+            $root = [System.Windows.Automation.AutomationElement]::RootElement
+            
+            # Find target window or use root
+            $searchRoot = $root
+            if ("{safe_title}") {{
+                $windowCondition = New-Object System.Windows.Automation.PropertyCondition(
+                    [System.Windows.Automation.AutomationElement]::NameProperty, 
+                    "*{safe_title}*"
+                )
+                $windows = $root.FindAll([System.Windows.Automation.TreeScope]::Children, 
+                    [System.Windows.Automation.Condition]::TrueCondition)
+                foreach ($win in $windows) {{
+                    if ($win.Current.Name -like "*{safe_title}*") {{
+                        $searchRoot = $win
+                        break
+                    }}
+                }}
+            }}
+            
+            # Search for clickable elements with matching name
+            $nameCondition = New-Object System.Windows.Automation.PropertyCondition(
+                [System.Windows.Automation.AutomationElement]::NameProperty, 
+                "{safe_name}"
+            )
+            
+            # Also search for partial matches
+            $allElements = $searchRoot.FindAll([System.Windows.Automation.TreeScope]::Descendants, 
+                [System.Windows.Automation.Condition]::TrueCondition)
+            
+            foreach ($elem in $allElements) {{
+                $name = $elem.Current.Name
+                $controlType = $elem.Current.ControlType.ProgrammaticName
+                
+                # Check if name matches (exact or contains)
+                if ($name -and ($name -eq "{safe_name}" -or $name -like "*{safe_name}*")) {{
+                    # Only include clickable types
+                    $clickableTypes = @("ControlType.Button", "ControlType.MenuItem", "ControlType.Hyperlink", 
+                                       "ControlType.ListItem", "ControlType.TabItem", "ControlType.TreeItem",
+                                       "ControlType.CheckBox", "ControlType.RadioButton", "ControlType.SplitButton")
+                    
+                    if ($clickableTypes -contains $controlType -or $elem.Current.IsKeyboardFocusable) {{
+                        $rect = $elem.Current.BoundingRectangle
+                        if ($rect.Width -gt 0 -and $rect.Height -gt 0) {{
+                            $results += @{{
+                                name = $name
+                                control_type = $controlType
+                                automation_id = $elem.Current.AutomationId
+                                is_enabled = $elem.Current.IsEnabled
+                                center_x = [int]($rect.X + $rect.Width / 2)
+                                center_y = [int]($rect.Y + $rect.Height / 2)
+                                bounds = @{{
+                                    x = [int]$rect.X
+                                    y = [int]$rect.Y
+                                    width = [int]$rect.Width
+                                    height = [int]$rect.Height
+                                }}
+                            }}
+                        }}
+                    }}
+                }}
+                
+                if ($results.Count -ge 10) {{ break }}
+            }}
+            
+            $results | ConvertTo-Json -Depth 3
+            '''
+            
+            result = await asyncio.to_thread(
+                subprocess.run,
+                ["powershell", "-NoProfile", "-Command", cmd],
+                capture_output=True, text=True, timeout=30
+            )
+            
+            if result.returncode == 0 and result.stdout.strip():
+                elements = json.loads(result.stdout.strip())
+                if isinstance(elements, dict):
+                    elements = [elements]
+                
+                if elements:
+                    # Return first enabled element
+                    for elem in elements:
+                        if elem.get("is_enabled", True):
+                            return ToolResult(
+                                status=ToolStatus.SUCCESS,
+                                data=elem,
+                                message=f"Found '{elem['name']}' at ({elem['center_x']}, {elem['center_y']})"
+                            )
+                    
+                    # If no enabled, return first anyway
+                    elem = elements[0]
+                    return ToolResult(
+                        status=ToolStatus.SUCCESS,
+                        data=elem,
+                        message=f"Found '{elem['name']}' (disabled) at ({elem['center_x']}, {elem['center_y']})"
+                    )
+            
+            return ToolResult(
+                status=ToolStatus.ERROR,
+                error=f"Could not find element '{element_name}'",
+                message=f"No clickable element named '{element_name}' found"
+            )
+            
+        except Exception as e:
+            return ToolResult(status=ToolStatus.ERROR, error=str(e))
+    
+    async def _click_element_by_name(self, element_name: str, window_title: str = "", 
+                                      double: bool = False, **kwargs) -> ToolResult:
+        """Find an element by name and click it
+        
+        Common uses: click "OK", click "Cancel", click "Close", click "Accept"
+        """
+        try:
+            # First find the element
+            find_result = await self._find_clickable_element(element_name, window_title)
+            
+            if find_result.status != ToolStatus.SUCCESS:
+                return find_result
+            
+            elem = find_result.data
+            x, y = elem["center_x"], elem["center_y"]
+            
+            # Move mouse and click
+            user32.SetCursorPos(x, y)
+            await asyncio.sleep(0.05)  # Small delay for UI to register
+            
+            clicks = 2 if double else 1
+            for _ in range(clicks):
+                user32.mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
+                user32.mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
+                if double:
+                    await asyncio.sleep(0.05)
+            
+            action = "Double-clicked" if double else "Clicked"
+            return ToolResult(
+                status=ToolStatus.SUCCESS,
+                data={"element": elem, "clicked_at": {"x": x, "y": y}},
+                message=f"{action} '{elem['name']}' at ({x}, {y})"
+            )
+            
+        except Exception as e:
+            return ToolResult(status=ToolStatus.ERROR, error=str(e))
+    
+    # ==================== SCREEN READING METHODS ====================
+    
+    async def _read_screen(self, method: str = "ocr", region: str = "", 
+                           estimate_only: bool = False) -> ToolResult:
+        """Read screen content using various methods.
+        
+        Methods:
+        - ocr: Extract text using Windows OCR (LOW tokens ~500-2000)
+        - ui_tree: Get UI Automation elements (LOWEST tokens ~100-500)
+        - screenshot_path: Save screenshot, return path only (NO tokens for image)
+        
+        Use estimate_only=True to get token cost estimate without reading.
+        """
+        try:
+            # Token cost estimates
+            token_estimates = {
+                "ocr": "~500-2000 tokens (text only, efficient)",
+                "ui_tree": "~100-500 tokens (structured data, most efficient)",
+                "screenshot_path": "~50 tokens (path only, you review manually)",
+                "vision_api": "~2000-6000 tokens (EXPENSIVE - sends image to AI)"
+            }
+            
+            if estimate_only:
+                return ToolResult(
+                    status=ToolStatus.SUCCESS,
+                    data={
+                        "token_estimates": token_estimates,
+                        "recommendation": "Use 'ui_tree' for navigation, 'ocr' for reading text, 'screenshot_path' for manual review",
+                        "warning": "Avoid continuous screen reading - tokens add up fast!"
+                    },
+                    message="Token estimates for screen reading methods"
+                )
+            
+            if method == "ocr":
+                return await self._ocr_screen(region)
+            elif method == "ui_tree":
+                return await self._get_ui_elements()
+            elif method == "screenshot_path":
+                # Just take screenshot and return path
+                result = await self._screenshot()
+                if result.status == ToolStatus.SUCCESS:
+                    return ToolResult(
+                        status=ToolStatus.SUCCESS,
+                        data={
+                            "path": result.data.get("path"),
+                            "token_cost": "~50 tokens (path only)",
+                            "note": "Screenshot saved - review manually or use OCR on specific region"
+                        },
+                        message=f"Screenshot saved to {result.data.get('path')}"
+                    )
+                return result
+            else:
+                return ToolResult(
+                    status=ToolStatus.ERROR,
+                    error=f"Unknown method: {method}. Use: ocr, ui_tree, screenshot_path"
+                )
+                
+        except Exception as e:
+            return ToolResult(status=ToolStatus.ERROR, error=str(e))
+    
+    async def _ocr_screen(self, region: str = "") -> ToolResult:
+        """Extract text from screen using Windows OCR"""
+        try:
+            # Use PowerShell with Windows.Media.Ocr
+            if region:
+                # Parse region "x,y,width,height"
+                parts = region.split(",")
+                if len(parts) == 4:
+                    reg_x, reg_y, reg_w, reg_h = map(int, parts)
+                    capture_region = f"$x={reg_x}; $y={reg_y}; $w={reg_w}; $h={reg_h}"
+                else:
+                    capture_region = "$screen = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds; $x=0; $y=0; $w=$screen.Width; $h=$screen.Height"
+            else:
+                capture_region = "$screen = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds; $x=0; $y=0; $w=$screen.Width; $h=$screen.Height"
+            
+            # PowerShell script for OCR - use string concat to avoid f-string escaping issues
+            ps_script = "Add-Type -AssemblyName System.Drawing\n" + capture_region + '''
+$bitmap = New-Object System.Drawing.Bitmap($w, $h)
+$graphics = [System.Drawing.Graphics]::FromImage($bitmap)
+$graphics.CopyFromScreen($x, $y, 0, 0, (New-Object System.Drawing.Size($w, $h)))
+
+# Save to temp file for OCR
+$tempFile = [System.IO.Path]::GetTempFileName() + ".png"
+$bitmap.Save($tempFile)
+$graphics.Dispose()
+$bitmap.Dispose()
+
+# Use Windows OCR via PowerShell
+try {
+    Add-Type -AssemblyName System.Runtime.WindowsRuntime
+    $null = [Windows.Media.Ocr.OcrEngine, Windows.Foundation, ContentType = WindowsRuntime]
+    $null = [Windows.Graphics.Imaging.BitmapDecoder, Windows.Foundation, ContentType = WindowsRuntime]
+    $null = [Windows.Storage.StorageFile, Windows.Foundation, ContentType = WindowsRuntime]
+    
+    $ocrEngine = [Windows.Media.Ocr.OcrEngine]::TryCreateFromUserProfileLanguages()
+    
+    $file = [Windows.Storage.StorageFile]::GetFileFromPathAsync($tempFile).GetAwaiter().GetResult()
+    $stream = $file.OpenAsync([Windows.Storage.FileAccessMode]::Read).GetAwaiter().GetResult()
+    $decoder = [Windows.Graphics.Imaging.BitmapDecoder]::CreateAsync($stream).GetAwaiter().GetResult()
+    $softwareBitmap = $decoder.GetSoftwareBitmapAsync().GetAwaiter().GetResult()
+    
+    $ocrResult = $ocrEngine.RecognizeAsync($softwareBitmap).GetAwaiter().GetResult()
+    $ocrResult.Text
+    
+    $stream.Dispose()
+    Remove-Item $tempFile -Force
+} catch {
+    # Fallback: just report we need tesseract
+    "OCR_FALLBACK_NEEDED"
+}
+'''
+            result = await asyncio.to_thread(
+                subprocess.run,
+                ["powershell", "-NoProfile", "-Command", ps_script],
+                capture_output=True,
+                text=True,
+                timeout=30
+            )
+            
+            text = result.stdout.strip()
+            
+            if text == "OCR_FALLBACK_NEEDED" or not text:
+                # Fallback to simpler method - get window titles and visible text
+                return await self._read_window_text()
+            
+            # Estimate tokens (roughly 1 token per 4 chars)
+            token_estimate = len(text) // 4
+            
+            return ToolResult(
+                status=ToolStatus.SUCCESS,
+                data={
+                    "text": text[:5000],  # Limit to prevent huge responses
+                    "char_count": len(text),
+                    "token_estimate": token_estimate,
+                    "method": "windows_ocr"
+                },
+                message=f"Extracted {len(text)} chars (~{token_estimate} tokens)"
+            )
+            
+        except Exception:
+            # Fallback to window text
+            return await self._read_window_text()
+    
+    async def _read_window_text(self, window_title: str = "", estimate_only: bool = False, **kwargs) -> ToolResult:
+        """Read text from windows using UI Automation (fallback, low tokens)"""
+        try:
+            if estimate_only:
+                return ToolResult(
+                    status=ToolStatus.SUCCESS,
+                    data={"token_estimate": 50, "method": "window_titles"},
+                    message="Estimated ~50 tokens for window titles (very low cost)"
+                )
+            if window_title:
+                filter_cmd = f"| Where-Object {{ $_.MainWindowTitle -like '*{window_title}*' }}"
+            else:
+                filter_cmd = "| Where-Object { $_.MainWindowTitle -ne '' }"
+            
+            cmd = f'''
+            Get-Process {filter_cmd} | 
+            Select-Object -First 10 ProcessName, MainWindowTitle |
+            ForEach-Object {{ "$($_.ProcessName): $($_.MainWindowTitle)" }}
+            '''
+            
+            result = await asyncio.to_thread(
+                subprocess.run,
+                ["powershell", "-NoProfile", "-Command", cmd],
+                capture_output=True,
+                text=True,
+                timeout=15
+            )
+            
+            text = result.stdout.strip()
+            lines = [line for line in text.split('\n') if line.strip()]
+            
+            return ToolResult(
+                status=ToolStatus.SUCCESS,
+                data={
+                    "windows": lines,
+                    "count": len(lines),
+                    "token_estimate": len(text) // 4,
+                    "method": "window_titles"
+                },
+                message=f"Found {len(lines)} windows (~{len(text)//4} tokens)"
+            )
+            
+        except Exception as e:
+            return ToolResult(status=ToolStatus.ERROR, error=str(e))
+    
+    async def _get_ui_elements(self, window_title: str = "", element_type: str = "", estimate_only: bool = False, **kwargs) -> ToolResult:
+        """Get UI Automation elements (LOWEST token cost for screen reading)"""
+        try:
+            if estimate_only:
+                return ToolResult(
+                    status=ToolStatus.SUCCESS,
+                    data={"token_estimate": 100, "method": "ui_automation"},
+                    message="Estimated ~100 tokens for UI elements (LOWEST cost method)"
+                )
+            # Build filter conditions
+            name_filter = f'$name -like "*{window_title}*"' if window_title else '$name.Length -gt 0'
+            type_check = f'$win.Current.ControlType.ProgrammaticName -like "*{element_type}*"' if element_type else '$true'
+            
+            cmd = f'''
+            Add-Type -AssemblyName UIAutomationClient
+            Add-Type -AssemblyName UIAutomationTypes
+            
+            $root = [System.Windows.Automation.AutomationElement]::RootElement
+            $condition = [System.Windows.Automation.Condition]::TrueCondition
+            
+            # Get top-level windows
+            $windows = $root.FindAll([System.Windows.Automation.TreeScope]::Children, $condition)
+            
+            $results = @()
+            foreach ($win in $windows) {{
+                try {{
+                    $name = $win.Current.Name
+                    if ($name -and ({name_filter}) -and ({type_check})) {{
+                        $results += @{{
+                            Name = $name
+                            Type = $win.Current.ControlType.ProgrammaticName
+                            ClassName = $win.Current.ClassName
+                            ProcessId = $win.Current.ProcessId
+                        }}
+                    }}
+                }} catch {{}}
+            }}
+            
+            $results | Select-Object -First 20 | ConvertTo-Json
+            '''
+            
+            result = await asyncio.to_thread(
+                subprocess.run,
+                ["powershell", "-NoProfile", "-Command", cmd],
+                capture_output=True,
+                text=True,
+                timeout=15
+            )
+            
+            if result.returncode == 0 and result.stdout.strip():
+                elements = json.loads(result.stdout)
+                if isinstance(elements, dict):
+                    elements = [elements]
+                
+                return ToolResult(
+                    status=ToolStatus.SUCCESS,
+                    data={
+                        "elements": elements,
+                        "count": len(elements),
+                        "token_estimate": len(result.stdout) // 4,
+                        "method": "ui_automation"
+                    },
+                    message=f"Found {len(elements)} UI elements (~{len(result.stdout)//4} tokens) - MOST EFFICIENT"
+                )
+            
+            # Fallback to window list
+            return await self._read_window_text()
+            
+        except Exception:
+            return await self._read_window_text()
+    
+    async def _find_ui_element(self, name: str = "", element_type: str = "Button", 
+                                window_title: str = "", estimate_only: bool = False, **kwargs) -> ToolResult:
+        """Find a specific UI element by name or type"""
+        try:
+            if estimate_only:
+                return ToolResult(
+                    status=ToolStatus.SUCCESS,
+                    data={"token_estimate": 150, "method": "ui_automation_search"},
+                    message="Estimated ~150 tokens for element search"
+                )
+            
+            search_name = name if name else "*"
+            
+            cmd = f'''
+            Add-Type -AssemblyName UIAutomationClient
+            Add-Type -AssemblyName UIAutomationTypes
+            
+            $root = [System.Windows.Automation.AutomationElement]::RootElement
+            
+            # Find by name condition
+            $nameCondition = New-Object System.Windows.Automation.PropertyCondition(
+                [System.Windows.Automation.AutomationElement]::NameProperty, 
+                "{search_name}",
+                [System.Windows.Automation.PropertyConditionFlags]::IgnoreCase
+            )
+            
+            $elements = $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, $nameCondition)
+            
+            $results = @()
+            foreach ($el in $elements) {{
+                try {{
+                    $rect = $el.Current.BoundingRectangle
+                    if (-not $rect.IsEmpty) {{
+                        $results += @{{
+                            Name = $el.Current.Name
+                            Type = $el.Current.ControlType.ProgrammaticName
+                            X = [int]$rect.X
+                            Y = [int]$rect.Y
+                            Width = [int]$rect.Width
+                            Height = [int]$rect.Height
+                            IsEnabled = $el.Current.IsEnabled
+                        }}
+                    }}
+                }} catch {{}}
+            }}
+            
+            $results | Select-Object -First 10 | ConvertTo-Json
+            '''
+            
+            result = await asyncio.to_thread(
+                subprocess.run,
+                ["powershell", "-NoProfile", "-Command", cmd],
+                capture_output=True,
+                text=True,
+                timeout=20
+            )
+            
+            if result.returncode == 0 and result.stdout.strip():
+                elements = json.loads(result.stdout)
+                if isinstance(elements, dict):
+                    elements = [elements]
+                
+                return ToolResult(
+                    status=ToolStatus.SUCCESS,
+                    data={
+                        "elements": elements,
+                        "count": len(elements),
+                        "search": {"name": name, "type": element_type}
+                    },
+                    message=f"Found {len(elements)} elements matching '{name}'"
+                )
+            
+            return ToolResult(
+                status=ToolStatus.SUCCESS,
+                data={"elements": [], "count": 0},
+                message=f"No elements found matching '{name}'"
+            )
+            
+        except Exception as e:
+            return ToolResult(status=ToolStatus.ERROR, error=str(e))
+    
+    async def _click_ui_element(self, name: str, element_type: str = "", **kwargs) -> ToolResult:
+        """Find and click a UI element by name"""
+        try:
+            # First find the element
+            find_result = await self._find_ui_element(name=name, element_type=element_type)
+            
+            if find_result.status != ToolStatus.SUCCESS:
+                return find_result
+            
+            elements = find_result.data.get("elements", [])
+            if not elements:
+                return ToolResult(
+                    status=ToolStatus.ERROR,
+                    error=f"No element found with name '{name}'"
+                )
+            
+            # Get first matching element's center
+            el = elements[0]
+            center_x = el.get("X", 0) + el.get("Width", 0) // 2
+            center_y = el.get("Y", 0) + el.get("Height", 0) // 2
+            
+            # Move and click
+            await self._move_mouse(x=center_x, y=center_y)
+            await asyncio.sleep(0.1)
+            await self._click_mouse(button="left")
+            
+            return ToolResult(
+                status=ToolStatus.SUCCESS,
+                data={
+                    "element": el.get("Name"),
+                    "clicked_at": {"x": center_x, "y": center_y}
+                },
+                message=f"Clicked '{el.get('Name')}' at ({center_x}, {center_y})"
+            )
+            
+        except Exception as e:
+            return ToolResult(status=ToolStatus.ERROR, error=str(e))
+    
+    async def _get_focused_element(self, **kwargs) -> ToolResult:
+        """Get information about the currently focused UI element"""
+        try:
+            cmd = '''
+            Add-Type -AssemblyName UIAutomationClient
+            Add-Type -AssemblyName UIAutomationTypes
+            
+            $focused = [System.Windows.Automation.AutomationElement]::FocusedElement
+            
+            if ($focused) {
+                @{
+                    Name = $focused.Current.Name
+                    Type = $focused.Current.ControlType.ProgrammaticName
+                    ClassName = $focused.Current.ClassName
+                    AutomationId = $focused.Current.AutomationId
+                    ProcessId = $focused.Current.ProcessId
+                    IsEnabled = $focused.Current.IsEnabled
+                    HasKeyboardFocus = $focused.Current.HasKeyboardFocus
+                    BoundingRectangle = @{
+                        X = $focused.Current.BoundingRectangle.X
+                        Y = $focused.Current.BoundingRectangle.Y
+                        Width = $focused.Current.BoundingRectangle.Width
+                        Height = $focused.Current.BoundingRectangle.Height
+                    }
+                } | ConvertTo-Json
+            } else {
+                '{"error": "No focused element"}'
+            }
+            '''
+            
+            result = await asyncio.to_thread(
+                subprocess.run,
+                ["powershell", "-NoProfile", "-Command", cmd],
+                capture_output=True,
+                text=True,
+                timeout=10
+            )
+            
+            if result.returncode == 0 and result.stdout.strip():
+                element = json.loads(result.stdout)
+                return ToolResult(
+                    status=ToolStatus.SUCCESS,
+                    data=element,
+                    message=f"Focused: {element.get('Name', 'Unknown')} ({element.get('Type', 'Unknown')})"
+                )
+            
+            return ToolResult(status=ToolStatus.ERROR, error="Could not get focused element")
+            
+        except Exception as e:
+            return ToolResult(status=ToolStatus.ERROR, error=str(e))
+    
+    async def _read_window_content(self, window_title: str, max_depth: int = 3, **kwargs) -> ToolResult:
+        """Read all text content from a specific window by title"""
+        try:
+            cmd = f'''
+            Add-Type -AssemblyName UIAutomationClient
+            Add-Type -AssemblyName UIAutomationTypes
+            
+            $root = [System.Windows.Automation.AutomationElement]::RootElement
+            $condition = [System.Windows.Automation.Condition]::TrueCondition
+            
+            # Find window by title
+            $windows = $root.FindAll([System.Windows.Automation.TreeScope]::Children, $condition)
+            $targetWindow = $null
+            
+            foreach ($win in $windows) {{
+                if ($win.Current.Name -like "*{window_title}*") {{
+                    $targetWindow = $win
+                    break
+                }}
+            }}
+            
+            if (-not $targetWindow) {{
+                Write-Output '{{"error": "Window not found"}}'
+                exit
+            }}
+            
+            # Get all text elements
+            $textCondition = New-Object System.Windows.Automation.PropertyCondition(
+                [System.Windows.Automation.AutomationElement]::IsTextPatternAvailableProperty, $true
+            )
+            
+            $results = @()
+            $allElements = $targetWindow.FindAll([System.Windows.Automation.TreeScope]::Descendants, $condition)
+            
+            foreach ($el in $allElements) {{
+                try {{
+                    $name = $el.Current.Name
+                    if ($name -and $name.Length -gt 0) {{
+                        $results += @{{
+                            Text = $name
+                            Type = $el.Current.ControlType.ProgrammaticName
+                        }}
+                    }}
+                }} catch {{}}
+            }}
+            
+            @{{
+                WindowTitle = $targetWindow.Current.Name
+                ElementCount = $results.Count
+                Content = $results | Select-Object -First 50
+            }} | ConvertTo-Json -Depth 3
+            '''
+            
+            result = await asyncio.to_thread(
+                subprocess.run,
+                ["powershell", "-NoProfile", "-Command", cmd],
+                capture_output=True,
+                text=True,
+                timeout=20
+            )
+            
+            if result.returncode == 0 and result.stdout.strip():
+                data = json.loads(result.stdout)
+                if "error" in data:
+                    return ToolResult(status=ToolStatus.ERROR, error=data["error"])
+                
+                return ToolResult(
+                    status=ToolStatus.SUCCESS,
+                    data=data,
+                    message=f"Read {data.get('ElementCount', 0)} elements from '{data.get('WindowTitle', window_title)}'"
+                )
+            
+            return ToolResult(status=ToolStatus.ERROR, error="Could not read window content")
+            
+        except Exception as e:
+            return ToolResult(status=ToolStatus.ERROR, error=str(e))
+    
+    async def _read_text_at_position(self, x: int, y: int, **kwargs) -> ToolResult:
+        """Read UI element text at specific screen coordinates"""
+        try:
+            cmd = f'''
+            Add-Type -AssemblyName UIAutomationClient
+            Add-Type -AssemblyName UIAutomationTypes
+            
+            $point = New-Object System.Windows.Point({x}, {y})
+            $element = [System.Windows.Automation.AutomationElement]::FromPoint($point)
+            
+            if ($element) {{
+                @{{
+                    Name = $element.Current.Name
+                    Type = $element.Current.ControlType.ProgrammaticName
+                    ClassName = $element.Current.ClassName
+                    AutomationId = $element.Current.AutomationId
+                    Value = ""
+                    Position = @{{ X = {x}; Y = {y} }}
+                    BoundingRectangle = @{{
+                        X = $element.Current.BoundingRectangle.X
+                        Y = $element.Current.BoundingRectangle.Y
+                        Width = $element.Current.BoundingRectangle.Width
+                        Height = $element.Current.BoundingRectangle.Height
+                    }}
+                }} | ConvertTo-Json
+            }} else {{
+                '{{"error": "No element at position"}}'
+            }}
+            '''
+            
+            result = await asyncio.to_thread(
+                subprocess.run,
+                ["powershell", "-NoProfile", "-Command", cmd],
+                capture_output=True,
+                text=True,
+                timeout=10
+            )
+            
+            if result.returncode == 0 and result.stdout.strip():
+                data = json.loads(result.stdout)
+                if "error" in data:
+                    return ToolResult(status=ToolStatus.ERROR, error=data["error"])
+                
+                return ToolResult(
+                    status=ToolStatus.SUCCESS,
+                    data=data,
+                    message=f"At ({x}, {y}): {data.get('Name', 'Unknown')} ({data.get('Type', 'Unknown')})"
+                )
+            
+            return ToolResult(status=ToolStatus.ERROR, error="Could not read element at position")
+            
         except Exception as e:
             return ToolResult(status=ToolStatus.ERROR, error=str(e))
     
@@ -1089,7 +1994,10 @@ class WindowsAutomation(BaseTool):
                             "media_control", "list_files", "read_file", "write_file",
                             "delete_file", "create_folder", "delete_folder", "execute_script",
                             "get_clipboard", "set_clipboard", "move_mouse", "click_mouse",
-                            "get_mouse_position"
+                            "get_mouse_position", "find_clickable_element", "click_element_by_name",
+                            "read_screen", "read_window_text", "get_ui_elements",
+                            "find_ui_element", "click_ui_element",
+                            "get_focused_element", "read_window_content", "read_text_at_position"
                         ],
                         "description": "Windows action to perform"
                     },
@@ -1119,7 +2027,7 @@ class WindowsAutomation(BaseTool):
                     "content": {"type": "string", "description": "Content for write_file or set_clipboard"},
                     "append": {"type": "boolean", "description": "Append to file instead of overwrite", "default": False},
                     "max_size": {"type": "integer", "description": "Max file size to read in bytes", "default": 10000},
-                    "script_content": {"type": "string", "description": "Script code to execute (saved to ~/Documents/Sakura/scripts/)"},
+                    "script_content": {"type": "string", "description": f"Script code to execute (saved to ~/Documents/{ASSISTANT_NAME}/scripts/)"},
                     "script_type": {
                         "type": "string",
                         "enum": ["powershell", "python", "batch", "cmd", "javascript", "vbscript"],
@@ -1128,11 +2036,34 @@ class WindowsAutomation(BaseTool):
                     },
                     "script_name": {"type": "string", "description": "Name for the script file (optional, auto-generated if not provided)"},
                     "execute": {"type": "boolean", "description": "Execute the script after creating (default true)", "default": True},
-                    "x": {"type": "integer", "description": "X coordinate for mouse movement"},
-                    "y": {"type": "integer", "description": "Y coordinate for mouse movement"},
+                    "x": {"type": "integer", "description": "X coordinate for mouse movement or position query"},
+                    "y": {"type": "integer", "description": "Y coordinate for mouse movement or position query"},
                     "absolute": {"type": "boolean", "description": "Use absolute coordinates (default true)", "default": True},
+                    "monitor": {"type": "integer", "description": "Monitor index for mouse movement (0=primary, 1=second, etc). If set, x/y are relative to that monitor"},
+                    "include_context": {"type": "boolean", "description": "For get_mouse_position: include info about element under cursor and monitor", "default": False},
+                    "element_name": {"type": "string", "description": "Name of element to find/click (e.g., 'OK', 'Cancel', 'Close', 'Accept', 'Save')"},
+                    "window_title": {"type": "string", "description": "Window title to search within (optional, searches all windows if not specified)"},
                     "button": {"type": "string", "enum": ["left", "right"], "description": "Mouse button to click", "default": "left"},
-                    "double": {"type": "boolean", "description": "Double-click", "default": False}
+                    "double": {"type": "boolean", "description": "Double-click", "default": False},
+                    "method": {
+                        "type": "string",
+                        "enum": ["ocr", "ui_tree", "screenshot_path"],
+                        "description": "Screen reading method: ui_tree (lowest tokens), ocr (medium), screenshot_path (highest - returns path for vision)",
+                        "default": "ui_tree"
+                    },
+                    "region": {
+                        "type": "object",
+                        "properties": {
+                            "x": {"type": "integer"},
+                            "y": {"type": "integer"},
+                            "width": {"type": "integer"},
+                            "height": {"type": "integer"}
+                        },
+                        "description": "Screen region to read (optional, full screen if not specified)"
+                    },
+                    "estimate_only": {"type": "boolean", "description": "Only estimate token cost without reading", "default": False},
+                    "element_type": {"type": "string", "description": "Filter UI elements by type (Button, Edit, Text, etc.)"},
+                    "max_depth": {"type": "integer", "description": "Max depth for UI tree traversal", "default": 3}
                 },
                 "required": ["action"]
             }
