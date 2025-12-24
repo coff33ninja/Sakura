@@ -9,130 +9,175 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### 🎉 First Stable Release
 
-This is the first stable release of Sakura, a fully autonomous AI assistant with real-time voice interaction, complete Windows control, and self-learning capabilities.
+Sakura v1.0.0 - A fully autonomous AI assistant with real-time voice interaction, complete Windows control, and self-learning capabilities.
 
-### Added
+**149 Total Tool Actions** across 10 tool categories.
 
-#### AI Enhancement Suite (6 Modules)
-- **Conversation Context** (`conversation_context.py`)
-  - Rolling buffer of 20 exchanges
-  - Mood detection (positive, frustrated, urgent, confused, casual)
-  - Topic tracking (files, system, apps, media, coding, etc.)
-  - Context injection into system prompt
-  - Session persistence with 30-min resume
+---
 
-- **Task Chaining** (`task_chain.py`)
-  - Multi-step request execution
-  - Dependency tracking between tasks
-  - Result passing between steps
-  - Chain detection ("and then", "after that", "also")
-  - Save/load chains to JSON
+### Tool Categories
 
-- **Error Recovery** (`error_recovery.py`)
-  - Error categorization (transient, permission, not_found, rate_limit, invalid, permanent)
-  - Automatic retry with exponential backoff
-  - Cooldown system for repeated failures
-  - User-friendly suggestions
-  - Error history tracking
-
-- **User Preferences** (`user_preferences.py`)
-  - Correction learning ("No, I meant...")
-  - Preference detection ("Always use PowerShell")
-  - Shortcut system ("My project = E:\Projects\Main")
-  - Preference inference from actions
-  - Auto-apply to tool arguments
-
-- **Proactive Suggestions** (`suggestions.py`)
-  - Time-based (morning, late night, lunch, end of day)
-  - Context-based (Python testing, git status, file backup)
-  - Error-based (permission fixes, search alternatives)
-  - Follow-up suggestions after actions
-  - Acceptance tracking and learning
-
-- **Natural Language Understanding** (`intent_parser.py`)
-  - Comprehensive synonym database
-  - Vague command handling ("do that", "the usual", "fix it")
-  - Fuzzy matching with typo tolerance
-  - Intent type detection
-  - Recent word context tracking
-
-#### Core Features
-- **Real-time Voice** via Gemini Live API
-  - Natural, low-latency conversation
-  - Interruption support
-  - Multiple voices (Aoede, Kore, Charon, Fenrir, Puck)
-  - 8 personality modes (4 female, 4 male)
-
-- **Wake Word Detection** via Picovoice
-  - GPU acceleration support
-  - Custom .ppn file support
-  - Built-in keywords (jarvis, alexa, etc.)
-
-- **Multi-Key API Rotation**
-  - Automatic failover on rate limits
-  - Key health monitoring
-  - Usage statistics
-
-- **Session Management**
-  - 2-hour session persistence
-  - Automatic resume on restart
-
-#### Windows Integration (41 Actions)
+#### 🖥️ Windows Automation (46 Actions)
 - App/window control (open, close, focus, minimize, maximize)
-- Mouse control (move, click, multi-monitor aware)
+- Mouse control (move, click, scroll, drag, multi-monitor aware)
 - Smart UI clicking (find buttons by name)
+- Keyboard shortcuts (Ctrl+C, Alt+Tab, Win+D, etc.)
+- Window snapping (Win+Arrow keys)
+- Virtual desktop control
 - Media control (play, pause, volume)
 - File operations (read, write, delete, search)
 - Process management (list, kill)
 - Screenshots and clipboard
 - Screen reading (OCR, UI Automation)
+- Power management (sleep, shutdown, restart, lock)
 
-#### System Discovery (15 Actions)
-- Hardware specs (CPU, RAM type/speed, GPU VRAM via nvidia-smi)
-- Multi-monitor detection with primary flag
+#### 💻 Developer Tools (33 Actions)
+**Git Operations (11)**
+- git_status, git_add, git_commit, git_push, git_pull
+- git_branch, git_checkout, git_log, git_diff
+- git_clone, git_init
+
+**Code Execution (4)**
+- run_python, run_javascript, run_powershell, run_batch
+
+**Package Management (11)**
+- pip: install, uninstall, list
+- npm: install, uninstall, list
+- winget: search, install, uninstall, list
+
+**SSH (5)**
+- ssh_connect, ssh_run_command
+- ssh_add_profile, ssh_list_profiles, ssh_delete_profile
+
+**Utility (3)**
+- check_tools, find_tool_path, run_multiple_commands
+
+#### 📅 Productivity (23 Actions)
+**Reminders (4)**
+- set_reminder, list_reminders, cancel_reminder, snooze_reminder
+
+**Timers (6)**
+- start_timer, stop_timer, list_timers, get_timer_status
+- start_stopwatch, stop_stopwatch
+
+**Notes (6)**
+- create_note, get_note, update_note, delete_note
+- list_notes, search_notes
+
+**To-Do (5)**
+- add_todo, complete_todo, update_todo, delete_todo, list_todos
+
+**Windows Integration (2)**
+- open_alarms_app, show_notification
+
+#### 🔍 System Discovery (15 Actions)
+- Hardware specs (CPU, RAM type/speed, GPU VRAM)
+- Multi-monitor detection
 - Installed/running applications
 - Network adapters and IPs
 - Drive information
+- Folder exploration
 
-#### Memory System (16 Actions)
+#### 🧠 Memory System (16 Actions)
 - Auto-logging of all actions
 - Location memory (file paths, app locations)
 - Script tracking with paths
 - Topic tracking with frequency
 - Cross-category search
 
-#### Integrations
-- **Web Search** - DuckDuckGo instant answers
-- **Web Fetch** - URL content extraction
-- **Discord** - Text and voice channel support
-- **Smart Home** - Home Assistant integration
-- **MCP Client** - Model Context Protocol servers
+#### 🌐 Web Tools (2 Actions)
+- web_search (DuckDuckGo)
+- web_fetch (URL content extraction)
+
+#### 💬 Discord (5 Actions)
+- Text and voice channel support
+- Message sending/reading
+
+#### 🏠 Smart Home (6 Actions)
+- Home Assistant integration
+- Device control
+
+#### 🔌 MCP Client (3 Actions)
+- Model Context Protocol server connections
+
+---
+
+### AI Enhancement Suite (6 Modules)
+
+#### Conversation Context (`conversation_context.py`)
+- Rolling buffer of 20 exchanges
+- Mood detection (positive, frustrated, urgent, confused, casual)
+- Topic tracking
+- Context injection into system prompt
+
+#### Task Chaining (`task_chain.py`)
+- Multi-step request execution
+- Dependency tracking between tasks
+- Result passing between steps
+
+#### Error Recovery (`error_recovery.py`)
+- Error categorization (transient, permission, not_found, rate_limit)
+- Automatic retry with exponential backoff
+- User-friendly suggestions
+
+#### User Preferences (`user_preferences.py`)
+- Correction learning ("No, I meant...")
+- Preference detection
+- Shortcut system
+
+#### Proactive Suggestions (`suggestions.py`)
+- Time/context/error-based suggestions
+- Acceptance tracking
+
+#### Natural Language Understanding (`intent_parser.py`)
+- Synonym database
+- Vague command handling
+- Fuzzy matching
+
+---
+
+### Core Features
+
+#### Background Task Manager (`background_tasks.py`)
+- Execute long tasks without blocking voice
+- Task queue with progress tracking
+- Task history persistence
+
+#### Connection Health Monitoring (`gemini_client.py`)
+- Auto-reconnect on connection drop
+- Activity tracking
+- Consecutive error handling
+
+#### Real-time Voice (Gemini Live API)
+- Natural, low-latency conversation
+- Interruption support
+- Multiple voices (Aoede, Kore, Charon, Fenrir, Puck)
+- 8 personality modes
+
+#### Wake Word Detection (Picovoice)
+- GPU acceleration support
+- Custom .ppn file support
+- Built-in keywords
+
+#### Multi-Key API Rotation
+- Automatic failover on rate limits
+- Key health monitoring
+
+---
 
 ### Technical Details
 - **Python 3.12** required
 - **Full async architecture** with asyncio
 - **Thread-safe** operations with asyncio.Lock()
 - **aiofiles** for all file I/O
-- **Proper cleanup** on shutdown
+- **All imports used** per Rule #1
 
-### Files Added
+### Data Storage
 ```
-modules/
-├── conversation_context.py
-├── task_chain.py
-├── error_recovery.py
-├── user_preferences.py
-├── suggestions.py
-└── intent_parser.py
-```
-
-### Data Files Created at Runtime
-```
-conversation_context.json    # Conversation history
-user_preferences.json        # Learned preferences
-suggestion_history.json      # Suggestion tracking
-error_recovery_log.json      # Error history
-intent_learning.json         # Learned intent mappings
+~/Documents/{ASSISTANT_NAME}/
+├── scripts/          # Generated scripts
+├── productivity/     # Reminders, timers, notes, todos
+└── developer/        # SSH profiles
 ```
 
 ---
@@ -140,61 +185,16 @@ intent_learning.json         # Learned intent mappings
 ## Pre-1.0 Development History
 
 <details>
-<summary>Click to expand development history</summary>
+<summary>Click to expand</summary>
 
-### [0.9.x] - AI Enhancement Phases
-- v0.9.6: Natural Language Understanding
-- v0.9.5: Proactive Suggestions
-- v0.9.4: Learning from Corrections
-- v0.9.3: Error Recovery
-- v0.9.2: Task Chaining
-- v0.9.1: Conversation Context
-
-### [0.8.x] - Smart UI & Hardware
-- Smart element clicking
-- Multi-monitor support
-- Detailed hardware specs
-- GPU stats via nvidia-smi
-
-### [0.7.x] - Wake Word & Voice
-- Wake word fixes
-- GPU acceleration
-- Custom .ppn support
-- Voice customization
-
-### [0.6.x] - Personas & Screen Reading
-- Male personas
-- Voice-gender validation
-- Screen reading actions
-- OCR support
-
-### [0.5.x] - Windows Automation
-- 41 Windows actions
-- Script sandbox
-- File operations
-- Process management
-
-### [0.4.x] - Memory & Discovery
-- Memory system (16 actions)
-- System discovery (15 actions)
-- Auto-logging
-- Location tracking
-
-### [0.3.x] - Tools & Integrations
-- Tool registry system
-- Discord integration
-- Web search/fetch
-- Smart home support
-
-### [0.2.x] - Audio & SDK
-- Gemini SDK 1.x compatibility
-- Correct sample rates
-- Async audio queue
-
-### [0.1.x] - Foundation
-- Async architecture
-- API key rotation
-- Session persistence
-- Basic voice chat
+- v0.9.x: AI Enhancement Phases (context, chaining, recovery, preferences, suggestions, NLU)
+- v0.8.x: Smart UI & Hardware detection
+- v0.7.x: Wake Word & Voice customization
+- v0.6.x: Personas & Screen Reading
+- v0.5.x: Windows Automation (41 actions)
+- v0.4.x: Memory & System Discovery
+- v0.3.x: Tool registry, Discord, Web, Smart Home
+- v0.2.x: Gemini SDK 1.x, Audio fixes
+- v0.1.x: Foundation, async architecture
 
 </details>

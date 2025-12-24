@@ -14,7 +14,8 @@ from dotenv import load_dotenv
 from modules import (
     AppConfig, AsyncConfigLoader, AudioManager, WakeWordDetector, 
     SessionManager, GeminiVoiceClient, get_current_persona, CURRENT_PERSONALITY,
-    TaskChain, ErrorRecovery, UserPreferences, SuggestionEngine, IntentParser
+    TaskChain, ErrorRecovery, UserPreferences, SuggestionEngine, IntentParser,
+    BackgroundTaskManager
 )
 from modules.conversation_context import ConversationContext
 from tools import create_tool_registry, ToolRegistry
@@ -38,6 +39,7 @@ class AIGirlfriend:
         self.user_preferences: UserPreferences = None
         self.suggestion_engine: SuggestionEngine = None
         self.intent_parser: IntentParser = None
+        self.background_task_manager: BackgroundTaskManager = None
         self.running = False
         self.audio_out_queue = None  # Queue for audio playback
         self._tasks = []  # Background tasks
@@ -122,6 +124,10 @@ class AIGirlfriend:
         self.intent_parser = IntentParser()
         await self.intent_parser.initialize()
         logging.info("🧠 Natural language understanding enabled")
+        
+        # Initialize background task manager
+        self.background_task_manager = BackgroundTaskManager()
+        logging.info("⚡ Background task manager enabled")
         
         # Initialize Gemini client
         self.gemini_client = GeminiVoiceClient(
@@ -643,6 +649,10 @@ COMMON MCP SERVERS (run with windows run_command "uvx <server>"):
         # Save intent parser learning
         if self.intent_parser:
             await self.intent_parser.cleanup()
+        
+        # Cleanup background task manager
+        if self.background_task_manager:
+            await self.background_task_manager.cleanup()
         
         if self.wake_detector:
             self.wake_detector.cleanup()

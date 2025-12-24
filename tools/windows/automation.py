@@ -38,13 +38,42 @@ if os.name == 'nt':
     VK_MEDIA_STOP = 0xB2
     VK_MEDIA_PLAY_PAUSE = 0xB3
     
+    # Modifier keys
+    VK_SHIFT = 0x10
+    VK_CONTROL = 0x11
+    VK_ALT = 0x12  # VK_MENU
+    VK_LWIN = 0x5B
+    VK_RWIN = 0x5C
+    
+    # Common keys
+    VK_TAB = 0x09
+    VK_RETURN = 0x0D
+    VK_ESCAPE = 0x1B
+    VK_SPACE = 0x20
+    VK_LEFT = 0x25
+    VK_UP = 0x26
+    VK_RIGHT = 0x27
+    VK_DOWN = 0x28
+    VK_DELETE = 0x2E
+    VK_F4 = 0x73
+    VK_D = 0x44
+    VK_E = 0x45
+    VK_L = 0x4C
+    VK_R = 0x52
+    
     # Mouse input constants
     MOUSEEVENTF_MOVE = 0x0001
     MOUSEEVENTF_LEFTDOWN = 0x0002
     MOUSEEVENTF_LEFTUP = 0x0004
     MOUSEEVENTF_RIGHTDOWN = 0x0008
     MOUSEEVENTF_RIGHTUP = 0x0010
+    MOUSEEVENTF_WHEEL = 0x0800
+    MOUSEEVENTF_HWHEEL = 0x01000
     MOUSEEVENTF_ABSOLUTE = 0x8000
+    
+    # Key event flags
+    KEYEVENTF_KEYUP = 0x0002
+    KEYEVENTF_EXTENDEDKEY = 0x0001
 
 
 class WindowsAutomation(BaseTool):
@@ -155,6 +184,15 @@ class WindowsAutomation(BaseTool):
             "get_focused_element": self._get_focused_element,
             "read_window_content": self._read_window_content,
             "read_text_at_position": self._read_text_at_position,
+            # New Windows enhancements
+            "send_hotkey": self._send_hotkey,
+            "scroll_mouse": self._scroll_mouse,
+            "snap_window": self._snap_window,
+            "drag_mouse": self._drag_mouse,
+            "virtual_desktop": self._virtual_desktop,
+            "right_click_menu": self._right_click_menu,
+            "lock_screen": self._lock_screen,
+            "power_action": self._power_action,
         }
         
         if action not in actions:
@@ -1976,6 +2014,401 @@ try {
         except Exception as e:
             return ToolResult(status=ToolStatus.ERROR, error=str(e))
     
+    async def _send_hotkey(self, keys: str, **kwargs) -> ToolResult:
+        """Send keyboard shortcuts/hotkeys using ctypes
+        
+        Examples:
+            - "ctrl+c" - Copy
+            - "ctrl+v" - Paste
+            - "ctrl+z" - Undo
+            - "ctrl+shift+esc" - Task Manager
+            - "alt+tab" - Switch windows
+            - "alt+f4" - Close window
+            - "win+d" - Show desktop
+            - "win+e" - Open Explorer
+            - "win+l" - Lock screen
+            - "win+r" - Run dialog
+            - "ctrl+alt+delete" - Security options
+            - "win+left" - Snap left
+            - "win+right" - Snap right
+        """
+        try:
+            # Parse the hotkey string
+            parts = keys.lower().replace(" ", "").split("+")
+            
+            # Map key names to virtual key codes
+            key_map = {
+                # Modifiers
+                "ctrl": VK_CONTROL, "control": VK_CONTROL,
+                "alt": VK_ALT, "menu": VK_ALT,
+                "shift": VK_SHIFT,
+                "win": VK_LWIN, "windows": VK_LWIN, "super": VK_LWIN,
+                # Common keys
+                "tab": VK_TAB,
+                "enter": VK_RETURN, "return": VK_RETURN,
+                "esc": VK_ESCAPE, "escape": VK_ESCAPE,
+                "space": VK_SPACE,
+                "left": VK_LEFT, "right": VK_RIGHT, "up": VK_UP, "down": VK_DOWN,
+                "delete": VK_DELETE, "del": VK_DELETE,
+                # Function keys
+                "f1": 0x70, "f2": 0x71, "f3": 0x72, "f4": 0x73,
+                "f5": 0x74, "f6": 0x75, "f7": 0x76, "f8": 0x77,
+                "f9": 0x78, "f10": 0x79, "f11": 0x7A, "f12": 0x7B,
+                # Letters (A-Z are 0x41-0x5A)
+                "a": 0x41, "b": 0x42, "c": 0x43, "d": 0x44, "e": 0x45,
+                "f": 0x46, "g": 0x47, "h": 0x48, "i": 0x49, "j": 0x4A,
+                "k": 0x4B, "l": 0x4C, "m": 0x4D, "n": 0x4E, "o": 0x4F,
+                "p": 0x50, "q": 0x51, "r": 0x52, "s": 0x53, "t": 0x54,
+                "u": 0x55, "v": 0x56, "w": 0x57, "x": 0x58, "y": 0x59, "z": 0x5A,
+                # Numbers (0-9 are 0x30-0x39)
+                "0": 0x30, "1": 0x31, "2": 0x32, "3": 0x33, "4": 0x34,
+                "5": 0x35, "6": 0x36, "7": 0x37, "8": 0x38, "9": 0x39,
+                # Special
+                "printscreen": 0x2C, "prtsc": 0x2C,
+                "home": 0x24, "end": 0x23,
+                "pageup": 0x21, "pgup": 0x21,
+                "pagedown": 0x22, "pgdn": 0x22,
+                "insert": 0x2D, "ins": 0x2D,
+                "backspace": 0x08, "back": 0x08,
+            }
+            
+            # Identify modifiers and main key
+            modifiers = []
+            main_keys = []
+            
+            for part in parts:
+                if part in ["ctrl", "control", "alt", "menu", "shift", "win", "windows", "super"]:
+                    modifiers.append(key_map[part])
+                elif part in key_map:
+                    main_keys.append(key_map[part])
+                else:
+                    return ToolResult(
+                        status=ToolStatus.ERROR,
+                        error=f"Unknown key: {part}. Available: {list(key_map.keys())}"
+                    )
+            
+            if not main_keys and not modifiers:
+                return ToolResult(status=ToolStatus.ERROR, error="No valid keys specified")
+            
+            # Press modifiers down
+            for mod in modifiers:
+                user32.keybd_event(mod, 0, 0, 0)
+            
+            # Press and release main keys
+            for key in main_keys:
+                user32.keybd_event(key, 0, 0, 0)
+                user32.keybd_event(key, 0, KEYEVENTF_KEYUP, 0)
+            
+            # Release modifiers (in reverse order)
+            for mod in reversed(modifiers):
+                user32.keybd_event(mod, 0, KEYEVENTF_KEYUP, 0)
+            
+            return ToolResult(
+                status=ToolStatus.SUCCESS,
+                message=f"Sent hotkey: {keys}"
+            )
+            
+        except Exception as e:
+            return ToolResult(status=ToolStatus.ERROR, error=str(e))
+    
+    async def _scroll_mouse(self, direction: str = "down", amount: int = 3, **kwargs) -> ToolResult:
+        """Scroll mouse wheel
+        
+        Args:
+            direction: "up", "down", "left", "right"
+            amount: Number of scroll clicks (default 3)
+        """
+        try:
+            # WHEEL_DELTA is 120 per click
+            wheel_delta = 120 * amount
+            
+            if direction.lower() == "up":
+                user32.mouse_event(MOUSEEVENTF_WHEEL, 0, 0, wheel_delta, 0)
+            elif direction.lower() == "down":
+                user32.mouse_event(MOUSEEVENTF_WHEEL, 0, 0, -wheel_delta, 0)
+            elif direction.lower() == "left":
+                user32.mouse_event(MOUSEEVENTF_HWHEEL, 0, 0, -wheel_delta, 0)
+            elif direction.lower() == "right":
+                user32.mouse_event(MOUSEEVENTF_HWHEEL, 0, 0, wheel_delta, 0)
+            else:
+                return ToolResult(
+                    status=ToolStatus.ERROR,
+                    error="Direction must be: up, down, left, right"
+                )
+            
+            return ToolResult(
+                status=ToolStatus.SUCCESS,
+                message=f"Scrolled {direction} by {amount} clicks"
+            )
+            
+        except Exception as e:
+            return ToolResult(status=ToolStatus.ERROR, error=str(e))
+    
+    async def _snap_window(self, position: str, title: str = "", **kwargs) -> ToolResult:
+        """Snap window to screen position using Win+Arrow keys
+        
+        Args:
+            position: "left", "right", "up" (maximize), "down" (minimize/restore),
+                     "topleft", "topright", "bottomleft", "bottomright"
+            title: Window title to snap (optional, uses foreground window if not specified)
+        """
+        try:
+            # Focus the window first if title specified
+            if title:
+                focus_result = await self._focus_window(title=title)
+                if focus_result.status != ToolStatus.SUCCESS:
+                    return focus_result
+                await asyncio.sleep(0.1)
+            
+            # Map positions to key sequences
+            position_map = {
+                "left": ["win+left"],
+                "right": ["win+right"],
+                "up": ["win+up"],  # Maximize
+                "down": ["win+down"],  # Minimize/restore
+                "maximize": ["win+up"],
+                "minimize": ["win+down"],
+                "topleft": ["win+left", "win+up"],
+                "topright": ["win+right", "win+up"],
+                "bottomleft": ["win+left", "win+down"],
+                "bottomright": ["win+right", "win+down"],
+                "center": ["win+down", "win+up"],  # Restore then maximize to center
+            }
+            
+            pos = position.lower().replace(" ", "").replace("-", "").replace("_", "")
+            
+            if pos not in position_map:
+                return ToolResult(
+                    status=ToolStatus.ERROR,
+                    error=f"Unknown position: {position}. Available: {list(position_map.keys())}"
+                )
+            
+            # Send the hotkey sequence
+            for hotkey in position_map[pos]:
+                await self._send_hotkey(hotkey)
+                await asyncio.sleep(0.15)  # Small delay between keys
+            
+            return ToolResult(
+                status=ToolStatus.SUCCESS,
+                message=f"Snapped window to {position}"
+            )
+            
+        except Exception as e:
+            return ToolResult(status=ToolStatus.ERROR, error=str(e))
+    
+    async def _drag_mouse(self, start_x: int, start_y: int, end_x: int, end_y: int, 
+                          button: str = "left", duration: float = 0.5, **kwargs) -> ToolResult:
+        """Drag mouse from one position to another
+        
+        Args:
+            start_x, start_y: Starting position
+            end_x, end_y: Ending position
+            button: "left" or "right"
+            duration: Duration of drag in seconds
+        """
+        try:
+            if button.lower() == "left":
+                down_flag = MOUSEEVENTF_LEFTDOWN
+                up_flag = MOUSEEVENTF_LEFTUP
+            elif button.lower() == "right":
+                down_flag = MOUSEEVENTF_RIGHTDOWN
+                up_flag = MOUSEEVENTF_RIGHTUP
+            else:
+                return ToolResult(status=ToolStatus.ERROR, error="Button must be 'left' or 'right'")
+            
+            # Move to start position
+            user32.SetCursorPos(start_x, start_y)
+            await asyncio.sleep(0.05)
+            
+            # Press button down
+            user32.mouse_event(down_flag, 0, 0, 0, 0)
+            await asyncio.sleep(0.05)
+            
+            # Smooth drag to end position
+            steps = max(10, int(duration * 60))  # ~60 steps per second
+            dx = (end_x - start_x) / steps
+            dy = (end_y - start_y) / steps
+            delay = duration / steps
+            
+            for i in range(steps):
+                x = int(start_x + dx * (i + 1))
+                y = int(start_y + dy * (i + 1))
+                user32.SetCursorPos(x, y)
+                await asyncio.sleep(delay)
+            
+            # Ensure we're at exact end position
+            user32.SetCursorPos(end_x, end_y)
+            await asyncio.sleep(0.05)
+            
+            # Release button
+            user32.mouse_event(up_flag, 0, 0, 0, 0)
+            
+            return ToolResult(
+                status=ToolStatus.SUCCESS,
+                data={
+                    "start": {"x": start_x, "y": start_y},
+                    "end": {"x": end_x, "y": end_y},
+                    "button": button
+                },
+                message=f"Dragged from ({start_x}, {start_y}) to ({end_x}, {end_y})"
+            )
+            
+        except Exception as e:
+            return ToolResult(status=ToolStatus.ERROR, error=str(e))
+    
+    async def _virtual_desktop(self, action: str, **kwargs) -> ToolResult:
+        """Control virtual desktops
+        
+        Args:
+            action: "new" (create), "close" (close current), "left" (switch left), 
+                   "right" (switch right), "list" (show all)
+        """
+        try:
+            action_map = {
+                "new": "win+ctrl+d",
+                "create": "win+ctrl+d",
+                "close": "win+ctrl+f4",
+                "left": "win+ctrl+left",
+                "prev": "win+ctrl+left",
+                "previous": "win+ctrl+left",
+                "right": "win+ctrl+right",
+                "next": "win+ctrl+right",
+                "view": "win+tab",
+                "list": "win+tab",
+                "show": "win+tab",
+            }
+            
+            act = action.lower()
+            
+            if act not in action_map:
+                return ToolResult(
+                    status=ToolStatus.ERROR,
+                    error=f"Unknown action: {action}. Available: {list(action_map.keys())}"
+                )
+            
+            await self._send_hotkey(action_map[act])
+            
+            action_messages = {
+                "new": "Created new virtual desktop",
+                "create": "Created new virtual desktop",
+                "close": "Closed current virtual desktop",
+                "left": "Switched to previous virtual desktop",
+                "prev": "Switched to previous virtual desktop",
+                "previous": "Switched to previous virtual desktop",
+                "right": "Switched to next virtual desktop",
+                "next": "Switched to next virtual desktop",
+                "view": "Opened Task View",
+                "list": "Opened Task View",
+                "show": "Opened Task View",
+            }
+            
+            return ToolResult(
+                status=ToolStatus.SUCCESS,
+                message=action_messages.get(act, f"Virtual desktop action: {action}")
+            )
+            
+        except Exception as e:
+            return ToolResult(status=ToolStatus.ERROR, error=str(e))
+    
+    async def _right_click_menu(self, x: int = None, y: int = None, **kwargs) -> ToolResult:
+        """Open right-click context menu at position or current mouse location
+        
+        Args:
+            x, y: Position to right-click (optional, uses current mouse position if not specified)
+        """
+        try:
+            # Move to position if specified
+            if x is not None and y is not None:
+                user32.SetCursorPos(x, y)
+                await asyncio.sleep(0.05)
+            
+            # Right click
+            user32.mouse_event(MOUSEEVENTF_RIGHTDOWN, 0, 0, 0, 0)
+            user32.mouse_event(MOUSEEVENTF_RIGHTUP, 0, 0, 0, 0)
+            
+            # Get current position for message
+            class POINT(ctypes.Structure):
+                _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
+            
+            pt = POINT()
+            user32.GetCursorPos(ctypes.byref(pt))
+            
+            return ToolResult(
+                status=ToolStatus.SUCCESS,
+                data={"x": pt.x, "y": pt.y},
+                message=f"Opened context menu at ({pt.x}, {pt.y})"
+            )
+            
+        except Exception as e:
+            return ToolResult(status=ToolStatus.ERROR, error=str(e))
+    
+    async def _lock_screen(self, **kwargs) -> ToolResult:
+        """Lock the Windows screen"""
+        try:
+            await self._send_hotkey("win+l")
+            return ToolResult(
+                status=ToolStatus.SUCCESS,
+                message="Screen locked"
+            )
+        except Exception as e:
+            return ToolResult(status=ToolStatus.ERROR, error=str(e))
+    
+    async def _power_action(self, action: str, delay: int = 0, **kwargs) -> ToolResult:
+        """Perform power actions (sleep, hibernate, shutdown, restart)
+        
+        Args:
+            action: "sleep", "hibernate", "shutdown", "restart", "logoff"
+            delay: Delay in seconds before action (default 0)
+        """
+        try:
+            action_commands = {
+                "sleep": "rundll32.exe powrprof.dll,SetSuspendState 0,1,0",
+                "hibernate": "shutdown /h",
+                "shutdown": f"shutdown /s /t {delay}",
+                "restart": f"shutdown /r /t {delay}",
+                "reboot": f"shutdown /r /t {delay}",
+                "logoff": "shutdown /l",
+                "logout": "shutdown /l",
+                "cancel": "shutdown /a",  # Cancel scheduled shutdown
+            }
+            
+            act = action.lower()
+            
+            if act not in action_commands:
+                return ToolResult(
+                    status=ToolStatus.ERROR,
+                    error=f"Unknown action: {action}. Available: {list(action_commands.keys())}"
+                )
+            
+            cmd = action_commands[act]
+            
+            result = await asyncio.to_thread(
+                subprocess.run,
+                ["cmd", "/c", cmd],
+                capture_output=True,
+                text=True,
+                timeout=10
+            )
+            
+            if result.returncode == 0:
+                if delay > 0 and act in ["shutdown", "restart", "reboot"]:
+                    return ToolResult(
+                        status=ToolStatus.SUCCESS,
+                        message=f"{action.capitalize()} scheduled in {delay} seconds. Use 'cancel' to abort."
+                    )
+                return ToolResult(
+                    status=ToolStatus.SUCCESS,
+                    message=f"Power action: {action}"
+                )
+            else:
+                return ToolResult(
+                    status=ToolStatus.ERROR,
+                    error=result.stderr or f"Failed to execute {action}"
+                )
+                
+        except Exception as e:
+            return ToolResult(status=ToolStatus.ERROR, error=str(e))
+    
     def get_schema(self) -> Dict[str, Any]:
         """Return schema for Windows automation tools"""
         return {
@@ -1997,7 +2430,9 @@ try {
                             "get_mouse_position", "find_clickable_element", "click_element_by_name",
                             "read_screen", "read_window_text", "get_ui_elements",
                             "find_ui_element", "click_ui_element",
-                            "get_focused_element", "read_window_content", "read_text_at_position"
+                            "get_focused_element", "read_window_content", "read_text_at_position",
+                            "send_hotkey", "scroll_mouse", "snap_window", "drag_mouse",
+                            "virtual_desktop", "right_click_menu", "lock_screen", "power_action"
                         ],
                         "description": "Windows action to perform"
                     },
@@ -2063,7 +2498,18 @@ try {
                     },
                     "estimate_only": {"type": "boolean", "description": "Only estimate token cost without reading", "default": False},
                     "element_type": {"type": "string", "description": "Filter UI elements by type (Button, Edit, Text, etc.)"},
-                    "max_depth": {"type": "integer", "description": "Max depth for UI tree traversal", "default": 3}
+                    "max_depth": {"type": "integer", "description": "Max depth for UI tree traversal", "default": 3},
+                    "keys": {"type": "string", "description": "Hotkey combination (e.g., 'ctrl+c', 'alt+tab', 'win+d', 'ctrl+shift+esc')"},
+                    "direction": {"type": "string", "enum": ["up", "down", "left", "right"], "description": "Scroll direction"},
+                    "amount": {"type": "integer", "description": "Scroll amount in clicks", "default": 3},
+                    "position": {"type": "string", "description": "Window snap position: left, right, up, down, topleft, topright, bottomleft, bottomright, maximize, minimize"},
+                    "start_x": {"type": "integer", "description": "Starting X coordinate for drag"},
+                    "start_y": {"type": "integer", "description": "Starting Y coordinate for drag"},
+                    "end_x": {"type": "integer", "description": "Ending X coordinate for drag"},
+                    "end_y": {"type": "integer", "description": "Ending Y coordinate for drag"},
+                    "duration": {"type": "number", "description": "Duration of drag in seconds", "default": 0.5},
+                    "delay": {"type": "integer", "description": "Delay in seconds for power actions", "default": 0},
+                    "power_action": {"type": "string", "enum": ["sleep", "hibernate", "shutdown", "restart", "logoff", "cancel"], "description": "Power action to perform"}
                 },
                 "required": ["action"]
             }

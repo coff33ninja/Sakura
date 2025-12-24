@@ -4,7 +4,21 @@
 
 > *"Hey Sakura, find my project files and create a backup script"* - She'll search all drives, remember the locations, write the script, and execute it.
 
+> ⚠️ **Documentation Notice**: The docs in `docs/tools/` and `docs/modules/` were AI-generated and may not be 100% accurate. The codebase is large and complex, so some details involve AI guessing based on partial context. Always refer to the actual source code for authoritative information.
+
 ## ✨ Key Features
+
+### 💻 Developer Tools (33 Actions)
+- Git operations (status, add, commit, push, pull, branch, checkout, log, diff, clone, init)
+- Code execution (Python, JavaScript, PowerShell, Batch)
+- Package management (pip, npm, winget)
+- SSH connections with saved profiles
+
+### 📅 Productivity (23 Actions)
+- Reminders with Windows notifications
+- Countdown timers and stopwatch
+- Quick notes with tags and search
+- To-do lists with priorities and due dates
 
 ### 🎙️ Real-Time Voice Conversation
 - **Gemini Live API** - Natural, low-latency voice interaction
@@ -13,7 +27,7 @@
 - **Configurable personalities** - Female & Male personas with gender-matched voices
 - **Voice/Persona validation** - Warns if voice gender doesn't match persona
 
-### Complete Windows Control (41 Actions)
+### Complete Windows Control (46 Actions)
 - **Run commands** - PowerShell, CMD, any command
 - **App control** - Open, close, focus, minimize, maximize windows
 - **Mouse control** - Move cursor, click, double-click, multi-monitor aware
@@ -63,24 +77,38 @@
 ## 🚀 Quick Start
 
 ### Prerequisites
-- **Python 3.12** (only tested version)
 - Windows 10/11
 - Microphone and speakers
 - Gemini API key(s)
 
-### Installation
+### Easy Install (Recommended)
+
+Just double-click `setup.bat` - it handles everything:
+1. Installs [uv](https://docs.astral.sh/uv/) (fast Python package manager)
+2. Installs Python 3.12 via uv
+3. Creates virtual environment
+4. Installs all dependencies
+5. Creates .env configuration file
+
+Then use `start.bat` to launch Sakura anytime.
+
+### Manual Installation
 
 ```bash
 # Clone the repository
 git clone https://github.com/coff33ninja/sakura-ai.git
 cd sakura-ai
 
-# Create virtual environment
-python -m venv .venv
-.\.venv\Scripts\activate
+# Install uv (required for MCP servers)
+winget install astral-sh.uv
+# Or: powershell -c "irm https://astral.sh/uv/install.ps1 | iex"
+
+# Install Python 3.12 and create venv
+uv python install 3.12
+uv venv --python 3.12 .venv
 
 # Install dependencies
-pip install -r requirements.txt
+uv pip install -r requirements.txt --python .venv\Scripts\python.exe
 ```
 
 ### Configuration
@@ -125,6 +153,10 @@ HOME_ASSISTANT_TOKEN=your_ha_token
 ### Run Sakura
 
 ```bash
+# Easy way - just double-click
+start.bat
+
+# Or manually
 .\.venv\Scripts\python main.py
 ```
 
@@ -134,6 +166,10 @@ HOME_ASSISTANT_TOKEN=your_ha_token
 
 | You Say | Sakura Does |
 |---------|-------------|
+| "Set a reminder for 5 minutes" | Creates reminder with notification |
+| "Start a 10 minute timer" | Starts countdown timer |
+| "Add a note about the meeting" | Creates quick note |
+| "Add task: buy groceries" | Adds to-do item |
 | "What's my PC name?" | Discovers and remembers system info |
 | "Find all Python files" | Searches all drives, remembers locations |
 | "Open Chrome" | Launches Chrome |
@@ -150,7 +186,7 @@ HOME_ASSISTANT_TOKEN=your_ha_token
 
 | Tool | Actions | Description |
 |------|---------|-------------|
-| `windows` | 41 | Full Windows control, smart clicking, screen reading |
+| `windows` | 46 | Full Windows control, smart clicking, screen reading, hotkeys, power |
 | `system_info` | 15 | System discovery, hardware specs, multi-monitor |
 | `memory` | 16 | Persistent memory |
 | `web_search` | 1 | DuckDuckGo search |
@@ -158,8 +194,10 @@ HOME_ASSISTANT_TOKEN=your_ha_token
 | `discord` | 5 | Discord integration |
 | `smart_home` | 6 | Home Assistant |
 | `mcp_client` | 3 | MCP server connection |
+| `productivity` | 23 | Reminders, timers, notes, to-do lists |
+| `developer` | 33 | Git, code execution, packages, SSH |
 
-**Total: 88 tool actions**
+**Total: 149 tool actions**
 
 ## 📁 Project Structure
 
@@ -175,7 +213,7 @@ sakura-ai/
 │   └── session_manager.py  # Session persistence
 ├── tools/
 │   ├── base.py             # Base tool classes
-│   ├── windows/            # Windows automation (29 actions)
+│   ├── windows/            # Windows automation (46 actions)
 │   ├── system_info/        # System discovery (15 actions)
 │   ├── memory/             # Memory system (16 actions)
 │   ├── web/                # Web search & fetch
@@ -307,7 +345,7 @@ pygame>=2.5.0
 
 ### v1.0.0 - First Stable Release (2025-12-24)
 
-This is the first stable release of Sakura, consolidating all development work into a production-ready AI assistant.
+This is the first stable release of Sakura, consolidating all development work into a production-ready AI assistant with **149 tool actions** across 10 categories.
 
 #### 🧠 AI Enhancement Suite
 | Module | Description |
@@ -318,20 +356,39 @@ This is the first stable release of Sakura, consolidating all development work i
 | `user_preferences.py` | Learning from corrections, shortcuts, preferences |
 | `suggestions.py` | Proactive suggestions based on context/time/errors |
 | `intent_parser.py` | Natural language understanding with synonyms |
+| `background_tasks.py` | Execute long tasks without blocking voice |
 
 #### 🔧 Core Features
-- **88 Tool Actions** across 8 tool categories
+- **149 Tool Actions** across 10 tool categories
 - **Real-time voice** via Gemini Live API
 - **Wake word detection** with Picovoice (GPU accelerated)
 - **Multi-key API rotation** with automatic failover
 - **Session persistence** and resumption
 - **Full async architecture** with proper cleanup
+- **Connection health monitoring** with auto-reconnect
 
-#### 🖥️ Windows Integration (41 Actions)
+#### 🖥️ Windows Integration (46 Actions)
 - App/window control, mouse/keyboard, media controls
 - File operations, process management, screenshots
 - Smart UI clicking, multi-monitor support
 - Screen reading (OCR, UI Automation)
+- Keyboard hotkeys (Ctrl+C, Alt+Tab, Win+D, etc.)
+- Mouse scroll, drag and drop
+- Window snapping (Win+Arrow)
+- Virtual desktop control
+- Power management (sleep, shutdown, restart)
+
+#### 💻 Developer Tools (33 Actions)
+- Git operations (status, add, commit, push, pull, branch, checkout, log, diff, clone, init)
+- Code execution (Python, JavaScript, PowerShell, Batch)
+- Package management (pip, npm, winget)
+- SSH connections with saved profiles
+
+#### 📅 Productivity (23 Actions)
+- Reminders with Windows notifications
+- Countdown timers and stopwatch
+- Quick notes with tags and search
+- To-do lists with priorities and due dates
 
 #### 📊 System Discovery (15 Actions)
 - Hardware specs (CPU, RAM, GPU with nvidia-smi)
@@ -348,49 +405,6 @@ This is the first stable release of Sakura, consolidating all development work i
 - Discord (text + voice)
 - Smart Home (Home Assistant)
 - MCP Client for extended tools
-
----
-
-<details>
-<summary>📜 Development History (Pre-1.0)</summary>
-
-#### v0.9 (v2.3) - Natural Language Understanding
-- Synonym handling, vague commands, fuzzy matching
-- Intent detection, context tracking, clarification questions
-
-#### v0.8 (v2.2) - Proactive Suggestions
-- Time/context/error-based suggestions
-- Acceptance tracking, cooldown system
-
-#### v0.7 (v2.1) - Learning from Corrections
-- Correction learning, preference detection, shortcuts
-- Preference inference from actions
-
-#### v0.6 (v2.0) - Error Recovery
-- Error categorization, retry with backoff
-- Cooldown system, user-friendly suggestions
-
-#### v0.5 (v1.9) - Task Chaining
-- Multi-step requests, dependency tracking
-- Sequential execution, chain persistence
-
-#### v0.4 (v1.8) - Conversation Context
-- Rolling buffer, mood/topic detection
-- Session persistence, context injection
-
-#### v0.3 (v1.7) - Smart UI & Multi-Monitor
-- Smart clicking, context-aware mouse
-- Detailed hardware specs, GPU stats
-
-#### v0.2 (v1.5-1.6) - Voice & Customization
-- Wake word fixes, GPU acceleration
-- Male personas, voice customization
-
-#### v0.1 (v1.1-1.4) - Foundation
-- Async architecture, tool system
-- Windows automation, memory, integrations
-
-</details>
 
 ## 📄 License
 

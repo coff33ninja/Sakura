@@ -13,6 +13,8 @@ from .discord import DiscordBot
 from .mcp import MCPClient
 from .windows import WindowsAutomation
 from .system_info import SystemDiscovery
+from .productivity import ProductivityManager
+from .developer import DeveloperTools
 
 __all__ = [
     # Base classes
@@ -35,6 +37,10 @@ __all__ = [
     'WindowsAutomation',
     # System Discovery
     'SystemDiscovery',
+    # Productivity
+    'ProductivityManager',
+    # Developer
+    'DeveloperTools',
 ]
 
 
@@ -51,6 +57,8 @@ async def create_tool_registry() -> ToolRegistry:
     await registry.register(MCPClient())
     await registry.register(WindowsAutomation())
     await registry.register(SystemDiscovery())
+    await registry.register(ProductivityManager())
+    await registry.register(DeveloperTools())
     
     # Initialize all tools
     await registry.initialize_all()

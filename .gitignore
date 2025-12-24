@@ -71,3 +71,5 @@ backups/*.zip
 test_*.py
 !test_live.py
 backups/sakura_wake_word/Sakura_en_windows_v4_0_0.ppn
+conversation_context.json
+error_recovery_log.json

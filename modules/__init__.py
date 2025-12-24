@@ -30,6 +30,7 @@ from .suggestions import (
     SuggestionEngine, SuggestionType, SuggestionPriority, Suggestion, SuggestionFeedback
 )
 from .intent_parser import IntentParser, IntentType, ParsedIntent
+from .background_tasks import BackgroundTaskManager, BackgroundTask, TaskState
 
 __all__ = [
     # Configuration
@@ -64,5 +65,8 @@ __all__ = [
     'SuggestionEngine', 'SuggestionType', 'SuggestionPriority', 'Suggestion', 'SuggestionFeedback',
     
     # Intent Parsing
-    'IntentParser', 'IntentType', 'ParsedIntent'
+    'IntentParser', 'IntentType', 'ParsedIntent',
+    
+    # Background Tasks
+    'BackgroundTaskManager', 'BackgroundTask', 'TaskState'
 ]

@@ -3,6 +3,7 @@ import logging
 from typing import Optional, AsyncGenerator, Dict, Any, List
 from google import genai
 import random
+from datetime import datetime, timedelta
 from .persona import get_goodbye_responses
 from .api_key_manager import APIKeyManager, KeyStatus
 
@@ -19,12 +20,19 @@ class GeminiVoiceClient:
         self.key_manager = APIKeyManager()
         self.current_key = None
         self.tools = []  # Tool declarations for function calling
+        self._system_prompt = ""  # Store for reconnection
+        self._last_activity = datetime.now()
+        self._connection_check_interval = timedelta(seconds=30)
+        self._reconnect_lock = asyncio.Lock()
+        self._consecutive_errors = 0
+        self._max_consecutive_errors = 10
         
     async def initialize(self, system_prompt: str, resume_handle: Optional[str] = None, 
                          tools: Optional[List[Dict[str, Any]]] = None):
         """Initialize Gemini client and session with key rotation and tools"""
         try:
-            # Store tools for function calling
+            # Store for reconnection
+            self._system_prompt = system_prompt
             self.tools = tools or []
             
             # Load API keys
@@ -81,27 +89,43 @@ class GeminiVoiceClient:
             return False
     
     async def send_audio(self, audio_data: bytes):
-        """Send audio data to Gemini with error handling"""
+        """Send audio data to Gemini with error handling and connection monitoring"""
         if not self.is_connected or not self.session:
-            return
+            # Try to reconnect if disconnected
+            if await self._auto_reconnect():
+                logging.info("🔄 Auto-reconnected, resuming audio stream")
+            else:
+                return
             
         try:
             # Send as realtime input with proper format
             await self.session.send_realtime_input(
                 audio={"data": audio_data, "mime_type": "audio/pcm"}
             )
+            self._update_activity()
+            self._consecutive_errors = 0
         except Exception as e:
-            logging.error(f"Error sending audio: {e}")
-            await self._handle_api_error(e)
+            self._consecutive_errors += 1
+            logging.error(f"Error sending audio (attempt {self._consecutive_errors}): {e}")
+            
+            if self._consecutive_errors >= self._max_consecutive_errors:
+                logging.warning("🔄 Too many consecutive errors, attempting reconnect...")
+                await self._auto_reconnect()
+            else:
+                await self._handle_api_error(e)
     
     async def send_text(self, text: str, end_of_turn: bool = True):
         """Send text input to Gemini to trigger a voice response"""
         if not self.is_connected or not self.session:
-            return
+            if not await self._auto_reconnect():
+                return
             
         try:
             await self.session.send(input=text, end_of_turn=end_of_turn)
+            self._update_activity()
+            self._consecutive_errors = 0
         except Exception as e:
+            self._consecutive_errors += 1
             logging.error(f"Error sending text: {e}")
             await self._handle_api_error(e)
     
@@ -122,13 +146,33 @@ class GeminiVoiceClient:
                         yield response_data
                         continue
                     
-                    # Handle server content with model turn
+                    # Handle function calls from multiple possible locations
+                    function_calls_found = []
+                    
+                    # Check response.tool_call (old SDK format)
+                    if hasattr(response, 'tool_call') and response.tool_call:
+                        if hasattr(response.tool_call, 'function_calls'):
+                            function_calls_found.extend(response.tool_call.function_calls)
+                            logging.info(f"🔧 Function calls in tool_call: {len(response.tool_call.function_calls)}")
+                    
+                    # Check server_content.model_turn.parts for function calls (Live API format)
                     if response.server_content and response.server_content.model_turn:
                         for part in response.server_content.model_turn.parts:
+                            # Extract audio
                             if part.inline_data and isinstance(part.inline_data.data, bytes):
                                 response_data['audio'] = part.inline_data.data
+                            # Extract text
                             if hasattr(part, 'text') and part.text:
                                 response_data['text'] = part.text
+                            # Extract function calls
+                            if hasattr(part, 'function_call') and part.function_call:
+                                function_calls_found.append(part.function_call)
+                                logging.info(f"🔧 Function call in model_turn.parts: {part.function_call.name if hasattr(part.function_call, 'name') else 'unknown'}")
+                    
+                    # Add to response if any found
+                    if function_calls_found:
+                        response_data['function_calls'] = function_calls_found
+                        logging.info(f"✨ Total function calls found: {len(function_calls_found)}")
                     
                     # Handle user transcription if available (input_transcription)
                     if hasattr(response, 'server_content') and response.server_content:
@@ -145,11 +189,9 @@ class GeminiVoiceClient:
                         response.session_resumption_update.resumable):
                         response_data['session_handle'] = response.session_resumption_update.new_handle
                     
-                    # Handle function calls if implemented
-                    if hasattr(response, 'tool_call') and response.tool_call:
-                        response_data['function_calls'] = response.tool_call.function_calls
-                    
                     if response_data:
+                        self._update_activity()
+                        self._consecutive_errors = 0
                         await self.key_manager.mark_key_used(self.current_key, success=True)
                         yield response_data
                     
@@ -190,6 +232,8 @@ class GeminiVoiceClient:
     
     async def get_connection_status(self) -> Dict[str, Any]:
         """Get detailed connection and key status"""
+        time_since_activity = datetime.now() - self._last_activity
+        
         status = {
             'is_connected': self.is_connected,
             'current_key_name': self.current_key.name if self.current_key else None,
@@ -197,7 +241,11 @@ class GeminiVoiceClient:
             'session_active': self.session is not None,
             'client_initialized': self.client is not None,
             'voice_name': self.voice_name,
-            'model': self.model
+            'model': self.model,
+            # Health monitoring info
+            'last_activity_seconds_ago': time_since_activity.seconds,
+            'consecutive_errors': self._consecutive_errors,
+            'connection_healthy': await self.check_connection_health()
         }
         
         # Get key manager stats if available
@@ -237,6 +285,81 @@ class GeminiVoiceClient:
     
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         await self.cleanup()
+    
+    def _update_activity(self):
+        """Update last activity timestamp"""
+        self._last_activity = datetime.now()
+    
+    async def check_connection_health(self) -> bool:
+        """Check if connection is healthy based on activity and errors"""
+        if not self.is_connected or not self.session:
+            return False
+        
+        # Check if connection is stale (no activity for too long)
+        time_since_activity = datetime.now() - self._last_activity
+        if time_since_activity > self._connection_check_interval * 2:
+            logging.warning(f"⚠️ Connection may be stale (no activity for {time_since_activity.seconds}s)")
+            return False
+        
+        # Check consecutive errors
+        if self._consecutive_errors >= self._max_consecutive_errors // 2:
+            logging.warning(f"⚠️ High error rate: {self._consecutive_errors} consecutive errors")
+            return False
+        
+        return True
+    
+    async def _auto_reconnect(self) -> bool:
+        """Attempt to automatically reconnect if disconnected"""
+        async with self._reconnect_lock:
+            # Double-check connection state inside lock
+            if self.is_connected and self.session:
+                return True
+            
+            logging.info("🔄 Attempting auto-reconnect...")
+            
+            try:
+                # Cleanup old session if exists
+                if self._session_context:
+                    try:
+                        await self._session_context.__aexit__(None, None, None)
+                    except Exception:
+                        pass
+                    self._session_context = None
+                    self.session = None
+                
+                # Rebuild config
+                config = {
+                    "response_modalities": ["AUDIO"],
+                    "system_instruction": self._system_prompt,
+                    "speech_config": {
+                        "voice_config": {
+                            "prebuilt_voice_config": {
+                                "voice_name": self.voice_name
+                            }
+                        }
+                    }
+                }
+                
+                if self.tools:
+                    config["tools"] = [{"function_declarations": self.tools}]
+                
+                # Reconnect
+                self.session = await self._connect_with_retry(config)
+                if self.session:
+                    self.is_connected = True
+                    self._consecutive_errors = 0
+                    self._update_activity()
+                    logging.info("✅ Auto-reconnect successful")
+                    return True
+                else:
+                    self.is_connected = False
+                    logging.error("❌ Auto-reconnect failed")
+                    return False
+                    
+            except Exception as e:
+                logging.error(f"❌ Auto-reconnect error: {e}")
+                self.is_connected = False
+                return False
     
     async def _connect_with_retry(self, config, max_retries: int = 3) -> Optional[Any]:
         """Connect to Gemini with automatic key rotation on failure"""
