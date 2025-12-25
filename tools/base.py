@@ -86,7 +86,21 @@ class ToolRegistry:
     
     def get_schemas(self) -> List[Dict[str, Any]]:
         """Get schemas for all enabled tools (for Gemini function calling)"""
-        return [t.get_schema() for t in self.get_enabled_tools()]
+        schemas = []
+        for tool in self.get_enabled_tools():
+            schema = tool.get_schema()
+            
+            # Add run_in_background parameter to all tools
+            # This lets Gemini decide based on user intent whether to run in background
+            if 'parameters' in schema and 'properties' in schema['parameters']:
+                schema['parameters']['properties']['run_in_background'] = {
+                    "type": "boolean",
+                    "description": "Set to true to run this task in the background. Use when: user says 'let me know when done', 'while I do something else', 'in the background', or for long operations like searching all drives. The user can continue chatting while the task runs, and will be notified when complete.",
+                    "default": False
+                }
+            
+            schemas.append(schema)
+        return schemas
     
     async def initialize_all(self) -> Dict[str, bool]:
         """Initialize all tools concurrently"""

@@ -11,7 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Sakura v1.0.0 - A fully autonomous AI assistant with real-time voice interaction, complete Windows control, and self-learning capabilities.
 
-**149 Total Tool Actions** across 10 tool categories.
+**150 Total Tool Actions** across 10 tool categories.
 
 ---
 
@@ -70,13 +70,15 @@ Sakura v1.0.0 - A fully autonomous AI assistant with real-time voice interaction
 **Windows Integration (2)**
 - open_alarms_app, show_notification
 
-#### 🔍 System Discovery (15 Actions)
+#### 🔍 System Discovery (16 Actions)
 - Hardware specs (CPU, RAM type/speed, GPU VRAM)
 - Multi-monitor detection
-- Installed/running applications
+- Installed/running applications (searches all registry locations)
 - Network adapters and IPs
 - Drive information
 - Folder exploration
+- **find_file** - Search for ANY file type across all drives (exe, documents, images, videos, audio, archives, code)
+- **find_app_path** - Enhanced app discovery (registry, App Paths, Start Menu, all drives)
 
 #### 🧠 Memory System (16 Actions)
 - Auto-logging of all actions
@@ -139,8 +141,11 @@ Sakura v1.0.0 - A fully autonomous AI assistant with real-time voice interaction
 ### Core Features
 
 #### Background Task Manager (`background_tasks.py`)
-- Execute long tasks without blocking voice
-- Task queue with progress tracking
+- Execute long tasks without blocking voice conversation
+- Task queue with max 3 concurrent tasks
+- Progress tracking and completion notifications
+- Sakura announces when background tasks complete
+- Automatic for: file searches, app discovery, git clone, package installs
 - Task history persistence
 
 #### Connection Health Monitoring (`gemini_client.py`)

@@ -72,15 +72,23 @@
 - **Cross-search** - Search across ALL memory categories
 - **Session stats** - Track usage over time
 
-### 🔍 System Discovery (15 Actions)
+### 🔍 System Discovery (16 Actions)
 - **PC info** - Computer name, username, OS
 - **Hardware** - Full specs: CPU, RAM (type, speed, slots), GPU (VRAM via nvidia-smi), storage
 - **Multi-monitor** - Detect all displays, primary/secondary, resolution, mouse position per monitor
-- **Installed apps** - Search by category (browsers, dev, media, games)
+- **Installed apps** - Search by category (browsers, dev, media, games, office, utilities)
 - **Running processes** - See what's active
 - **Network info** - Adapters, IPs, DNS
 - **Folder exploration** - Browse any directory
-- **App paths** - Find where apps are installed
+- **App paths** - Find where apps are installed (searches ALL drives and registry)
+- **Find any file** - Search for executables, documents, images, videos, audio, archives, code files across all drives
+
+### 🔄 Background Task Execution
+- **Non-blocking operations** - Long tasks run in background while you keep chatting
+- **Task queue** - Up to 3 concurrent tasks, others queued automatically
+- **Completion notifications** - Sakura tells you when tasks finish
+- **Progress tracking** - Monitor running and pending tasks
+- **Automatic for**: File searches across drives, app discovery, git clone, package installs
 
 ### 🌐 Web & Integrations
 - **Web search** - DuckDuckGo instant answers
@@ -186,7 +194,9 @@ start.bat
 | "Add a note about the meeting" | Creates quick note |
 | "Add task: buy groceries" | Adds to-do item |
 | "What's my PC name?" | Discovers and remembers system info |
-| "Find all Python files" | Searches all drives, remembers locations |
+| "Find all Python files" | Starts background search, notifies when done |
+| "Find Steam on D drive" | Searches specific drive for application |
+| "Find my vacation photos" | Searches all drives for image files |
 | "Open Chrome" | Launches Chrome |
 | "Turn up the volume" | Increases system volume |
 | "Create a script to ping Google" | Writes PowerShell script to sandbox |
@@ -202,7 +212,7 @@ start.bat
 | Tool | Actions | Description |
 |------|---------|-------------|
 | `windows` | 46 | Full Windows control, smart clicking, screen reading, hotkeys, power |
-| `system_info` | 15 | System discovery, hardware specs, multi-monitor |
+| `system_info` | 16 | System discovery, hardware specs, multi-monitor, file search |
 | `memory` | 16 | Persistent memory |
 | `web_search` | 1 | DuckDuckGo search |
 | `web_fetch` | 1 | URL content extraction |
@@ -212,7 +222,7 @@ start.bat
 | `productivity` | 23 | Reminders, timers, notes, to-do lists |
 | `developer` | 33 | Git, code execution, packages, SSH |
 
-**Total: 149 tool actions**
+**Total: 150 tool actions**
 
 ## 📁 Project Structure
 

@@ -234,6 +234,22 @@ LEARNING FROM USER:
 - Your preferences are automatically applied (shell, browser, editor, etc.)
 - Shortcuts expand automatically (e.g., "my project" → actual path)
 
+BACKGROUND TASK EXECUTION:
+- For long-running tasks, you can run them in the background by setting run_in_background=true
+- Use background execution when:
+  - User says "let me know when done", "notify me when finished"
+  - User says "while I do something else", "in the background"
+  - User wants to continue chatting while a task runs
+  - Searching ALL drives (no specific path given) - this can take minutes
+  - Installing packages (pip, npm, winget)
+  - Cloning git repositories
+- Do NOT use background for:
+  - Quick lookups (specific path given)
+  - User is clearly waiting for the result
+  - Simple commands that complete quickly
+- When you start a background task, tell the user it's running and ask if they need anything else
+- The user will be automatically notified when background tasks complete
+
 NATURAL LANGUAGE UNDERSTANDING:
 - I understand synonyms: "launch" = "open" = "start" = "run"
 - Vague commands work: "do that again", "the usual", "fix it", "try again"
@@ -318,25 +334,21 @@ COMMON MCP SERVERS (run with windows run_command "uvx <server>"):
         
         return task_id
     
-    def _is_long_running_action(self, tool_name: str, action: str, args: dict) -> bool:
-        """Determine if an action is likely to be long-running"""
-        # Actions that are typically long-running
-        long_running_actions = {
+    def _should_suggest_background(self, tool_name: str, action: str, args: dict) -> bool:
+        """Check if this action might benefit from background execution (for suggestions only)"""
+        # Actions that are potentially long-running
+        potentially_long = {
             "system_info": ["find_file", "find_app_path"],
             "windows": ["search_files"],
             "developer": ["git_clone", "pip_install", "npm_install", "winget_install"],
         }
         
-        # Check if this tool/action combo is long-running
-        if tool_name in long_running_actions:
-            if action in long_running_actions[tool_name]:
-                return True
-        
-        # Check for specific indicators in args
-        # Searching all drives is long-running
-        if action in ["find_file", "find_app_path", "search_files"]:
-            if not args.get("search_path") and not args.get("search_drive") and not args.get("path"):
-                return True  # Searching all drives
+        if tool_name in potentially_long:
+            if action in potentially_long[tool_name]:
+                # Searching all drives is definitely long
+                if action in ["find_file", "find_app_path", "search_files"]:
+                    if not args.get("search_path") and not args.get("search_drive") and not args.get("path"):
+                        return True
         
         return False
     
@@ -543,11 +555,15 @@ COMMON MCP SERVERS (run with windows run_command "uvx <server>"):
             
             # Apply user preferences to arguments
             action = tool_args.get('action', 'unknown')
+            
+            # Check if Gemini requested background execution
+            run_in_background = tool_args.pop('run_in_background', False)
+            
             tool_args = await self.user_preferences.apply_preferences_to_args(
                 tool_name, action, tool_args
             )
             
-            logging.info(f"🔧 Tool call: {tool_name} with args: {tool_args}")
+            logging.info(f"🔧 Tool call: {tool_name} with args: {tool_args}" + (" [BACKGROUND]" if run_in_background else ""))
             
             # Track tool usage for conversation context
             self._current_tools_used.append(tool_name)
@@ -555,8 +571,8 @@ COMMON MCP SERVERS (run with windows run_command "uvx <server>"):
             # Record last action for correction context
             await self.user_preferences.record_last_action(tool_name, action, tool_args)
             
-            # Check if this is a long-running action that should run in background
-            if self._is_long_running_action(tool_name, action, tool_args):
+            # Check if this should run in background (Gemini decides based on user intent)
+            if run_in_background:
                 # Submit to background and respond immediately
                 task_name = f"{tool_name}.{action}"
                 task_description = f"Running {action} on {tool_name}"
