@@ -123,31 +123,51 @@ class SystemDiscovery(BaseTool):
             return ToolResult(status=ToolStatus.ERROR, error=str(e))
     
     async def _list_installed_apps(self, category: str = "all") -> ToolResult:
-        """List installed applications"""
+        """List installed applications from all registry locations"""
         try:
             cmd = '''
-            Get-ItemProperty HKLM:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*,
-            HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\* 2>$null |
-            Where-Object { $_.DisplayName -ne $null } |
-            Select-Object DisplayName, Publisher, InstallLocation |
-            Sort-Object DisplayName -Unique |
-            ConvertTo-Json
+            $results = @()
+            $regPaths = @(
+                "HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*",
+                "HKLM:\\SOFTWARE\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*",
+                "HKCU:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*"
+            )
+            
+            foreach ($regPath in $regPaths) {
+                Get-ItemProperty $regPath -ErrorAction SilentlyContinue | Where-Object {
+                    $_.DisplayName -ne $null
+                } | ForEach-Object {
+                    $results += @{
+                        DisplayName = $_.DisplayName
+                        Publisher = $_.Publisher
+                        InstallLocation = $_.InstallLocation
+                        DisplayVersion = $_.DisplayVersion
+                    }
+                }
+            }
+            
+            $results | Sort-Object DisplayName -Unique | ConvertTo-Json -Depth 2
             '''
             
-            result = await self._run_ps(cmd)
+            result = await self._run_ps(cmd, timeout=60)
             if result:
                 apps = json.loads(result)
                 if isinstance(apps, dict):
                     apps = [apps]
                 
+                # Filter out empty entries
+                apps = [a for a in apps if a.get('DisplayName')]
+                
                 # Filter by category if specified
                 if category != "all":
                     category_filters = {
-                        "browsers": ["Chrome", "Firefox", "Edge", "Opera", "Brave", "Vivaldi"],
-                        "dev": ["Visual Studio", "Code", "Python", "Node", "Git", "Docker"],
-                        "media": ["VLC", "Spotify", "iTunes", "Media Player", "OBS", "Audacity"],
-                        "games": ["Steam", "Epic", "GOG", "Battle.net", "Origin", "Ubisoft"],
-                        "communication": ["Discord", "Slack", "Teams", "Zoom", "Telegram"],
+                        "browsers": ["Chrome", "Firefox", "Edge", "Opera", "Brave", "Vivaldi", "Safari", "Chromium"],
+                        "dev": ["Visual Studio", "Code", "Python", "Node", "Git", "Docker", "JetBrains", "IntelliJ", "PyCharm", "WebStorm", "Android Studio", "Xcode", "Eclipse", "NetBeans", "Sublime", "Atom", "Notepad++"],
+                        "media": ["VLC", "Spotify", "iTunes", "Media Player", "OBS", "Audacity", "Foobar", "Winamp", "AIMP", "MusicBee", "Plex", "Kodi", "MPV", "PotPlayer", "KMPlayer", "DaVinci", "Premiere", "After Effects", "Photoshop", "GIMP", "Paint"],
+                        "games": ["Steam", "Epic", "GOG", "Battle.net", "Origin", "Ubisoft", "EA App", "Riot", "Xbox", "PlayStation", "Rockstar", "Bethesda"],
+                        "communication": ["Discord", "Slack", "Teams", "Zoom", "Telegram", "WhatsApp", "Skype", "Signal", "Viber", "WeChat"],
+                        "office": ["Microsoft Office", "Word", "Excel", "PowerPoint", "Outlook", "OneNote", "LibreOffice", "OpenOffice", "WPS", "Google Docs"],
+                        "utilities": ["7-Zip", "WinRAR", "CCleaner", "Malwarebytes", "Avast", "AVG", "Norton", "Kaspersky", "TeamViewer", "AnyDesk", "PuTTY", "FileZilla", "WinSCP"],
                     }
                     
                     if category in category_filters:
@@ -156,8 +176,8 @@ class SystemDiscovery(BaseTool):
                 
                 return ToolResult(
                     status=ToolStatus.SUCCESS,
-                    data=apps[:50],  # Limit to 50
-                    message=f"Found {len(apps)} installed apps"
+                    data=apps[:100],  # Limit to 100
+                    message=f"Found {len(apps)} installed apps" + (f" in category '{category}'" if category != "all" else "")
                 )
             
             return ToolResult(status=ToolStatus.ERROR, error="Could not retrieve apps")
@@ -165,21 +185,57 @@ class SystemDiscovery(BaseTool):
             return ToolResult(status=ToolStatus.ERROR, error=str(e))
     
     async def _search_apps(self, query: str) -> ToolResult:
-        """Search for installed apps by name"""
+        """Search for installed apps by name across all registry locations"""
         try:
             cmd = f'''
-            Get-ItemProperty HKLM:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*,
-            HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\* 2>$null |
-            Where-Object {{ $_.DisplayName -like "*{query}*" }} |
-            Select-Object DisplayName, Publisher, InstallLocation, DisplayVersion |
-            ConvertTo-Json
+            $results = @()
+            $regPaths = @(
+                "HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*",
+                "HKLM:\\SOFTWARE\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*",
+                "HKCU:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*"
+            )
+            
+            foreach ($regPath in $regPaths) {{
+                Get-ItemProperty $regPath -ErrorAction SilentlyContinue | Where-Object {{
+                    $_.DisplayName -like "*{query}*"
+                }} | ForEach-Object {{
+                    $results += @{{
+                        DisplayName = $_.DisplayName
+                        Publisher = $_.Publisher
+                        InstallLocation = $_.InstallLocation
+                        DisplayVersion = $_.DisplayVersion
+                        UninstallString = $_.UninstallString
+                        DisplayIcon = $_.DisplayIcon
+                    }}
+                }}
+            }}
+            
+            # Also check App Paths registry
+            $appPaths = "HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\App Paths"
+            Get-ChildItem $appPaths -ErrorAction SilentlyContinue | Where-Object {{
+                $_.PSChildName -like "*{query}*"
+            }} | ForEach-Object {{
+                $default = (Get-ItemProperty $_.PSPath -ErrorAction SilentlyContinue).'(default)'
+                if ($default) {{
+                    $results += @{{
+                        DisplayName = $_.PSChildName
+                        InstallLocation = $default
+                        Source = "App Paths"
+                    }}
+                }}
+            }}
+            
+            $results | Sort-Object DisplayName -Unique | ConvertTo-Json -Depth 2
             '''
             
-            result = await self._run_ps(cmd)
+            result = await self._run_ps(cmd, timeout=30)
             if result:
                 apps = json.loads(result)
                 if isinstance(apps, dict):
                     apps = [apps]
+                
+                # Filter out empty entries
+                apps = [a for a in apps if a.get('DisplayName')]
                 
                 return ToolResult(
                     status=ToolStatus.SUCCESS,
@@ -542,13 +598,23 @@ class SystemDiscovery(BaseTool):
         except Exception as e:
             return ToolResult(status=ToolStatus.ERROR, error=str(e))
     
-    async def _find_app_path(self, app_name: str) -> ToolResult:
-        """Find the executable path for an application"""
+    async def _find_app_path(self, app_name: str, search_drive: str = None) -> ToolResult:
+        """Find the executable path for an application
+        
+        Args:
+            app_name: Name of the application to find
+            search_drive: Optional drive letter to search (e.g., "D", "E:")
+        """
         try:
             found = []
+            app_lower = app_name.lower()
             
-            # Search in PATH first
-            cmd = f'Get-Command "{app_name}" -ErrorAction SilentlyContinue | Select-Object Source | ConvertTo-Json'
+            # Normalize drive letter
+            if search_drive:
+                search_drive = search_drive.rstrip(':').upper() + ":"
+            
+            # 1. Search in PATH first (fastest)
+            cmd = f'Get-Command "{app_name}*" -ErrorAction SilentlyContinue | Select-Object Source | ConvertTo-Json'
             result = await self._run_ps(cmd)
             if result:
                 try:
@@ -562,7 +628,87 @@ class SystemDiscovery(BaseTool):
                 except json.JSONDecodeError:
                     pass
             
-            # Search in Start Menu
+            # 2. Check App Paths registry (Windows app registration)
+            app_paths_cmd = f'''
+            $paths = @()
+            $appPaths = "HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\App Paths"
+            Get-ChildItem $appPaths -ErrorAction SilentlyContinue | ForEach-Object {{
+                $name = $_.PSChildName
+                if ($name -like "*{app_name}*") {{
+                    $default = (Get-ItemProperty $_.PSPath -ErrorAction SilentlyContinue).'(default)'
+                    if ($default) {{ $paths += @{{ Name = $name; Path = $default }} }}
+                }}
+            }}
+            $paths | ConvertTo-Json
+            '''
+            result = await self._run_ps(app_paths_cmd)
+            if result:
+                try:
+                    data = json.loads(result)
+                    if isinstance(data, dict) and data.get('Path'):
+                        found.append({"path": data['Path'], "source": "App Paths Registry"})
+                    elif isinstance(data, list):
+                        for d in data:
+                            if d.get('Path'):
+                                found.append({"path": d['Path'], "source": "App Paths Registry"})
+                except json.JSONDecodeError:
+                    pass
+            
+            # 3. Search Registry Uninstall keys for InstallLocation
+            reg_cmd = f'''
+            $results = @()
+            $regPaths = @(
+                "HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*",
+                "HKLM:\\SOFTWARE\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*",
+                "HKCU:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*"
+            )
+            foreach ($regPath in $regPaths) {{
+                Get-ItemProperty $regPath -ErrorAction SilentlyContinue | Where-Object {{
+                    $_.DisplayName -like "*{app_name}*" -and $_.InstallLocation
+                }} | ForEach-Object {{
+                    $results += @{{
+                        Name = $_.DisplayName
+                        InstallLocation = $_.InstallLocation
+                        DisplayIcon = $_.DisplayIcon
+                    }}
+                }}
+            }}
+            $results | ConvertTo-Json
+            '''
+            result = await self._run_ps(reg_cmd)
+            if result:
+                try:
+                    data = json.loads(result)
+                    if isinstance(data, dict):
+                        data = [data]
+                    for d in data:
+                        if d.get('InstallLocation'):
+                            install_path = Path(d['InstallLocation'])
+                            found.append({
+                                "path": str(install_path),
+                                "name": d.get('Name', ''),
+                                "source": "Registry InstallLocation"
+                            })
+                            # Try to find exe in install location
+                            if install_path.exists():
+                                for exe in install_path.glob("*.exe"):
+                                    if app_lower in exe.stem.lower():
+                                        found.append({
+                                            "path": str(exe),
+                                            "source": "Registry InstallLocation (exe)"
+                                        })
+                        # Also check DisplayIcon which often points to exe
+                        if d.get('DisplayIcon'):
+                            icon_path = d['DisplayIcon'].split(',')[0].strip('"')
+                            if icon_path.lower().endswith('.exe') and Path(icon_path).exists():
+                                found.append({
+                                    "path": icon_path,
+                                    "source": "Registry DisplayIcon"
+                                })
+                except json.JSONDecodeError:
+                    pass
+            
+            # 4. Search in Start Menu shortcuts
             start_menu_paths = [
                 Path(os.environ.get('APPDATA', '')) / "Microsoft/Windows/Start Menu/Programs",
                 Path("C:/ProgramData/Microsoft/Windows/Start Menu/Programs"),
@@ -571,13 +717,158 @@ class SystemDiscovery(BaseTool):
             for sm_path in start_menu_paths:
                 if sm_path.exists():
                     for lnk in sm_path.rglob("*.lnk"):
-                        if app_name.lower() in lnk.stem.lower():
-                            found.append({"path": str(lnk), "source": "Start Menu"})
+                        if app_lower in lnk.stem.lower():
+                            # Try to resolve shortcut target
+                            resolve_cmd = f'''
+                            $shell = New-Object -ComObject WScript.Shell
+                            $shortcut = $shell.CreateShortcut("{str(lnk)}")
+                            $shortcut.TargetPath
+                            '''
+                            target = await self._run_ps(resolve_cmd)
+                            if target and Path(target).exists():
+                                found.append({"path": target, "source": "Start Menu (resolved)"})
+                            else:
+                                found.append({"path": str(lnk), "source": "Start Menu"})
+            
+            # 5. Search common installation directories on all available drives
+            # Get all drives
+            if search_drive:
+                drives_to_search = [search_drive]
+            else:
+                # Get all fixed drives
+                drives_result = await self._run_ps(
+                    "Get-PSDrive -PSProvider FileSystem | Where-Object { $_.Free -ne $null } | Select-Object -ExpandProperty Root"
+                )
+                if drives_result:
+                    drives_to_search = [d.strip().rstrip('\\') for d in drives_result.split('\n') if d.strip()]
+                else:
+                    drives_to_search = ["C:"]
+            
+            # Common installation directories (will be checked on each drive)
+            common_subdirs = [
+                "Program Files",
+                "Program Files (x86)",
+                "Programs",
+                "Apps",
+                "Applications",
+                "Software",
+                "Tools",
+                "Utilities",
+                "Games",
+                "SteamLibrary\\steamapps\\common",
+                "GOG Games",
+                "Epic Games",
+            ]
+            
+            for drive in drives_to_search:
+                for subdir in common_subdirs:
+                    base = Path(f"{drive}\\{subdir}")
+                    if base.exists():
+                        try:
+                            for folder in base.iterdir():
+                                if folder.is_dir() and app_lower in folder.name.lower():
+                                    found.append({
+                                        "path": str(folder),
+                                        "source": f"{drive}\\{subdir}"
+                                    })
+                                    # Look for exe inside
+                                    try:
+                                        for exe in folder.glob("*.exe"):
+                                            if app_lower in exe.stem.lower():
+                                                found.append({
+                                                    "path": str(exe),
+                                                    "source": f"{drive}\\{subdir} (exe)"
+                                                })
+                                                break
+                                    except PermissionError:
+                                        pass
+                        except PermissionError:
+                            pass
+            
+            # Add user-specific paths
+            user_paths = [
+                os.path.expandvars("%LOCALAPPDATA%\\Programs"),
+                os.path.expandvars("%LOCALAPPDATA%"),
+                os.path.expandvars("%APPDATA%"),
+                os.path.expandvars("%USERPROFILE%"),
+            ]
+            
+            for base_path in user_paths:
+                base = Path(base_path)
+                if base.exists():
+                    try:
+                        for folder in base.iterdir():
+                            if folder.is_dir() and app_lower in folder.name.lower():
+                                found.append({
+                                    "path": str(folder),
+                                    "source": f"User ({base.name})"
+                                })
+                                # Look for exe inside
+                                try:
+                                    for exe in folder.glob("*.exe"):
+                                        if app_lower in exe.stem.lower():
+                                            found.append({
+                                                "path": str(exe),
+                                                "source": f"User ({base.name}) exe"
+                                            })
+                                            break
+                                except PermissionError:
+                                    pass
+                    except PermissionError:
+                        pass
+            
+            # 6. If user specified a drive, do a broader search on that drive
+            if search_drive:
+                drive_search_cmd = f'''
+                $results = @()
+                $searchPath = "{search_drive}\\"
+                
+                # Search top-level folders and one level deep
+                Get-ChildItem $searchPath -Directory -ErrorAction SilentlyContinue | ForEach-Object {{
+                    if ($_.Name -like "*{app_name}*") {{
+                        $results += $_.FullName
+                        # Look for exe
+                        Get-ChildItem $_.FullName -Filter "*.exe" -ErrorAction SilentlyContinue | 
+                            Where-Object {{ $_.Name -like "*{app_name}*" }} |
+                            ForEach-Object {{ $results += $_.FullName }}
+                    }}
+                    # Check one level deeper
+                    Get-ChildItem $_.FullName -Directory -ErrorAction SilentlyContinue | ForEach-Object {{
+                        if ($_.Name -like "*{app_name}*") {{
+                            $results += $_.FullName
+                            Get-ChildItem $_.FullName -Filter "*.exe" -ErrorAction SilentlyContinue |
+                                Where-Object {{ $_.Name -like "*{app_name}*" }} |
+                                ForEach-Object {{ $results += $_.FullName }}
+                        }}
+                    }}
+                }}
+                $results | ConvertTo-Json
+                '''
+                result = await self._run_ps(drive_search_cmd, timeout=30)
+                if result:
+                    try:
+                        data = json.loads(result)
+                        if isinstance(data, str):
+                            data = [data]
+                        for path in data:
+                            if path:
+                                found.append({"path": path, "source": f"Drive Search ({search_drive})"})
+                    except json.JSONDecodeError:
+                        pass
+            
+            # Deduplicate by path
+            seen = set()
+            unique_found = []
+            for item in found:
+                path_lower = item['path'].lower()
+                if path_lower not in seen:
+                    seen.add(path_lower)
+                    unique_found.append(item)
             
             return ToolResult(
                 status=ToolStatus.SUCCESS,
-                data=found[:10],
-                message=f"Found {len(found)} matches for '{app_name}'"
+                data=unique_found[:20],
+                message=f"Found {len(unique_found)} matches for '{app_name}'" + (f" on {search_drive}" if search_drive else "")
             )
         except Exception as e:
             return ToolResult(status=ToolStatus.ERROR, error=str(e))
@@ -804,7 +1095,7 @@ class SystemDiscovery(BaseTool):
                     },
                     "category": {
                         "type": "string",
-                        "enum": ["all", "browsers", "dev", "media", "games", "communication"],
+                        "enum": ["all", "browsers", "dev", "media", "games", "communication", "office", "utilities"],
                         "description": "App category filter for list_installed_apps"
                     },
                     "detail_level": {
@@ -816,6 +1107,7 @@ class SystemDiscovery(BaseTool):
                     "path": {"type": "string", "description": "Folder path for explore_folder"},
                     "depth": {"type": "integer", "description": "Exploration depth", "default": 1},
                     "app_name": {"type": "string", "description": "App name for find_app_path"},
+                    "search_drive": {"type": "string", "description": "Drive letter to search (e.g., 'D', 'E:') for find_app_path - searches all drives if not specified"},
                     "filter_key": {"type": "string", "description": "Filter for environment variables"},
                     "count": {"type": "integer", "description": "Number of recent files", "default": 20}
                 },
