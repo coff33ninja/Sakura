@@ -473,9 +473,9 @@ If you identify:
 3. Provide reproducible details
 4. Allow reasonable time for remediation
 
-See [SECURITY.md](../SECURITY.md) for detailed reporting procedures and incident response.
+See [SECURITY.md](SECURITY.md) for detailed reporting procedures and incident response.
 
-See [HARDENING.md](../HARDENING.md) for practical steps to run Sakura more safely.
+See [HARDENING.md](HARDENING.md) for practical steps to run Sakura more safely.
 
 ---
 
@@ -529,6 +529,6 @@ This project chooses **transparency over denial** and **responsibility over hype
 *This document is part of the Sakura project and should be read by all users and contributors.*
 
 *See also:*
-- *[SECURITY.md](../SECURITY.md) — Security policy, attack scenarios, incident response*
-- *[HARDENING.md](../HARDENING.md) — Practical hardening guide*
-- *[CONTRIBUTING.md](../CONTRIBUTING.md) — Security-focused contribution guidelines*
+- *[SECURITY.md](SECURITY.md) — Security policy, attack scenarios, incident response*
+- *[HARDENING.md](HARDENING.md) — Practical hardening guide*
+- *[CONTRIBUTING.md](CONTRIBUTING.md) — Security-focused contribution guidelines*

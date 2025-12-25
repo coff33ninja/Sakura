@@ -582,7 +582,7 @@ type sakura_memory.json | findstr action_log
 ## Additional Resources
 
 - [SECURITY.md](SECURITY.md) — Full security policy and threat model
-- [docs/ETHICS_AND_ACCESSIBILITY.md](docs/ETHICS_AND_ACCESSIBILITY.md) — Ethical guidelines
+- [ETHICS_AND_ACCESSIBILITY.md](ETHICS_AND_ACCESSIBILITY.md) — Ethical guidelines
 - [CONTRIBUTING.md](CONTRIBUTING.md) — Security-focused contribution guidelines
 
 ---

@@ -567,6 +567,6 @@ If something feels unsafe, unclear, or unintended—it probably is.
 ---
 
 *This document should be read alongside:*
-- *[docs/ETHICS_AND_ACCESSIBILITY.md](docs/ETHICS_AND_ACCESSIBILITY.md) — Ethics, abuse scenarios, data retention*
+- *[ETHICS_AND_ACCESSIBILITY.md](ETHICS_AND_ACCESSIBILITY.md) — Ethics, abuse scenarios, data retention*
 - *[HARDENING.md](HARDENING.md) — Practical steps to run Sakura safely*
 - *[CONTRIBUTING.md](CONTRIBUTING.md) — Security-focused contribution guidelines*

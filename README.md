@@ -11,8 +11,8 @@
 > - Should be run in isolated/sandboxed environments
 > 
 > **Required reading before use:**
-> - [SECURITY.md](SECURITY.md) — Threat model, attack scenarios, incident response
-> - [HARDENING.md](HARDENING.md) — How to run Sakura more safely
+> - [docs/SECURITY.md](docs/SECURITY.md) — Threat model, attack scenarios, incident response
+> - [docs/HARDENING.md](docs/HARDENING.md) — How to run Sakura more safely
 > - [docs/ETHICS_AND_ACCESSIBILITY.md](docs/ETHICS_AND_ACCESSIBILITY.md) — Risks, abuse scenarios, data retention
 
 **Sakura** is a fully autonomous AI assistant with real-time voice interaction, complete Windows control, self-learning memory, and script generation capabilities. She can control your PC, remember everything, create and execute scripts, and learn about your system over time.
@@ -333,7 +333,7 @@ This means:
 
 Ichoose **transparency over false promises** and **responsibility over hype**.
 
-📖 **[Security Policy](SECURITY.md)** — Threat model, reporting, and honest limitations
+📖 **[Security Policy](docs/SECURITY.md)** — Threat model, reporting, and honest limitations
 
 ## 🔒 Security Notes — Honest Assessment
 
@@ -357,11 +357,11 @@ Ichoose **transparency over false promises** and **responsibility over hype**.
 - Network egress monitoring
 - Destructive action friction
 
-📖 **[Security Policy](SECURITY.md)** — Full threat model, attack scenarios, incident response, planned countermeasures
+📖 **[Security Policy](docs/SECURITY.md)** — Full threat model, attack scenarios, incident response, planned countermeasures
 
-📖 **[Hardening Guide](HARDENING.md)** — How to run Sakura more safely (VMs, firewalls, monitoring)
+📖 **[Hardening Guide](docs/HARDENING.md)** — How to run Sakura more safely (VMs, firewalls, monitoring)
 
-📖 **[Contributing Guidelines](CONTRIBUTING.md)** — Security-focused contribution requirements
+📖 **[Contributing Guidelines](docs/CONTRIBUTING.md)** — Security-focused contribution requirements
 
 ## ♿ Accessibility & Ethics
 
@@ -379,7 +379,7 @@ This document covers:
 - 📋 Responsible use guidelines
 - 🎭 Personality modes and responsible interaction
 
-📖 **[Security Policy](SECURITY.md)**
+📖 **[Security Policy](docs/SECURITY.md)**
 
 This document covers:
 - 🔐 Threat model (what Iprotect against, what Ican't)

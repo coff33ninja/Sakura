@@ -10,7 +10,7 @@ Sakura is a system-level AI agent capable of executing arbitrary code. Every con
 
 Please read and understand:
 - [SECURITY.md](SECURITY.md) — Threat model and attack scenarios
-- [docs/ETHICS_AND_ACCESSIBILITY.md](docs/ETHICS_AND_ACCESSIBILITY.md) — Ethical guidelines
+- [ETHICS_AND_ACCESSIBILITY.md](ETHICS_AND_ACCESSIBILITY.md) — Ethical guidelines
 - [HARDENING.md](HARDENING.md) — Security hardening guide
 
 ---
