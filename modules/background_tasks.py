@@ -51,16 +51,65 @@ class BackgroundTaskManager:
         self._lock = asyncio.Lock()
         self._tasks: Dict[str, BackgroundTask] = {}
         self._running_tasks: Dict[str, asyncio.Task] = {}
+        self._task_coroutines: Dict[str, Callable[[BackgroundTask], Awaitable[Any]]] = {}  # Store coroutines for queued tasks
         self._task_counter = 0
         self._max_concurrent = 3  # Max concurrent background tasks
-        self._task_timeout = timedelta(minutes=5)  # Default timeout
+        self._task_timeout = timedelta(minutes=10)  # Default timeout (increased for long searches)
+        self._completion_callbacks: List[Callable[[BackgroundTask], Awaitable[None]]] = []
+        self._newly_completed: List[str] = []  # Task IDs that completed since last check
+    
+    def on_task_complete(self, callback: Callable[[BackgroundTask], Awaitable[None]]):
+        """Register a callback to be called when any task completes"""
+        self._completion_callbacks.append(callback)
+    
+    async def get_newly_completed_tasks(self) -> List[Dict[str, Any]]:
+        """Get tasks that completed since last check and clear the list"""
+        async with self._lock:
+            completed = []
+            for task_id in self._newly_completed:
+                if task_id in self._tasks:
+                    task = self._tasks[task_id]
+                    completed.append({
+                        "id": task.id,
+                        "name": task.name,
+                        "description": task.description,
+                        "state": task.state.value,
+                        "result": task.result,
+                        "error": task.error,
+                        "duration": self._calculate_duration(task)
+                    })
+            self._newly_completed.clear()
+            return completed
+    
+    def _calculate_duration(self, task: BackgroundTask) -> str:
+        """Calculate human-readable duration"""
+        if not task.started_at or not task.completed_at:
+            return "unknown"
+        try:
+            start = datetime.fromisoformat(task.started_at)
+            end = datetime.fromisoformat(task.completed_at)
+            duration = end - start
+            if duration.total_seconds() < 60:
+                return f"{duration.total_seconds():.1f} seconds"
+            elif duration.total_seconds() < 3600:
+                return f"{duration.total_seconds() / 60:.1f} minutes"
+            else:
+                return f"{duration.total_seconds() / 3600:.1f} hours"
+        except Exception:
+            return "unknown"
+    
+    async def has_pending_notifications(self) -> bool:
+        """Check if there are completed tasks waiting to be announced"""
+        async with self._lock:
+            return len(self._newly_completed) > 0
     
     async def submit_task(
         self,
         name: str,
         description: str,
         coroutine: Callable[['BackgroundTask'], Awaitable[Any]],
-        subtasks: Optional[List[str]] = None
+        subtasks: Optional[List[str]] = None,
+        timeout_minutes: int = 10
     ) -> str:
         """
         Submit a task to run in background
@@ -70,6 +119,7 @@ class BackgroundTaskManager:
             description: What the task does
             coroutine: Async function that takes BackgroundTask and returns result
             subtasks: Optional list of subtask descriptions for progress tracking
+            timeout_minutes: Task timeout in minutes (default 10)
         
         Returns:
             Task ID
@@ -87,39 +137,45 @@ class BackgroundTaskManager:
             )
             
             self._tasks[task_id] = task
+            self._task_coroutines[task_id] = coroutine  # Store coroutine for later if queued
             
             # Check if we can start immediately
             running_count = sum(1 for t in self._tasks.values() if t.state == TaskState.RUNNING)
             
             if running_count < self._max_concurrent:
                 # Start the task
+                task_timeout = timedelta(minutes=timeout_minutes)
                 asyncio_task = asyncio.create_task(
-                    self._run_task(task_id, coroutine)
+                    self._run_task(task_id, coroutine, task_timeout)
                 )
                 self._running_tasks[task_id] = asyncio_task
                 task.state = TaskState.RUNNING
                 task.started_at = datetime.now().isoformat()
                 logging.info(f"🚀 Started background task: {name} ({task_id})")
             else:
-                logging.info(f"📋 Queued background task: {name} ({task_id})")
+                logging.info(f"📋 Queued background task: {name} ({task_id}) - {running_count} tasks already running")
             
             return task_id
     
     async def _run_task(
         self,
         task_id: str,
-        coroutine: Callable[[BackgroundTask], Awaitable[Any]]
+        coroutine: Callable[[BackgroundTask], Awaitable[Any]],
+        timeout: timedelta = None
     ):
         """Run a task and handle completion"""
         task = self._tasks.get(task_id)
         if not task:
             return
         
+        if timeout is None:
+            timeout = self._task_timeout
+        
         try:
             # Run with timeout
             result = await asyncio.wait_for(
                 coroutine(task),
-                timeout=self._task_timeout.total_seconds()
+                timeout=timeout.total_seconds()
             )
             
             async with self._lock:
@@ -127,13 +183,22 @@ class BackgroundTaskManager:
                 task.result = result
                 task.progress = 1.0
                 task.completed_at = datetime.now().isoformat()
+                self._newly_completed.append(task_id)  # Mark for notification
                 logging.info(f"✅ Background task completed: {task.name} ({task_id})")
+            
+            # Call completion callbacks
+            for callback in self._completion_callbacks:
+                try:
+                    await callback(task)
+                except Exception as e:
+                    logging.error(f"Error in task completion callback: {e}")
                 
         except asyncio.TimeoutError:
             async with self._lock:
                 task.state = TaskState.FAILED
-                task.error = f"Task timed out after {self._task_timeout.total_seconds()}s"
+                task.error = f"Task timed out after {timeout.total_seconds()}s"
                 task.completed_at = datetime.now().isoformat()
+                self._newly_completed.append(task_id)  # Still notify on failure
                 logging.error(f"⏰ Background task timed out: {task.name} ({task_id})")
                 
         except asyncio.CancelledError:
@@ -147,12 +212,15 @@ class BackgroundTaskManager:
                 task.state = TaskState.FAILED
                 task.error = str(e)
                 task.completed_at = datetime.now().isoformat()
+                self._newly_completed.append(task_id)  # Still notify on failure
                 logging.error(f"❌ Background task failed: {task.name} ({task_id}): {e}")
         
         finally:
-            # Remove from running tasks
+            # Remove from running tasks and coroutines
             if task_id in self._running_tasks:
                 del self._running_tasks[task_id]
+            if task_id in self._task_coroutines:
+                del self._task_coroutines[task_id]
             
             # Start next queued task
             await self._start_next_queued()
@@ -168,9 +236,19 @@ class BackgroundTaskManager:
             # Find oldest pending task
             for task_id, task in self._tasks.items():
                 if task.state == TaskState.PENDING:
-                    # We need the coroutine stored somewhere - for now just mark as running
-                    # In practice, the coroutine should be stored with the task
-                    break
+                    # Get the stored coroutine
+                    if task_id in self._task_coroutines:
+                        coroutine = self._task_coroutines[task_id]
+                        
+                        # Start the task
+                        asyncio_task = asyncio.create_task(
+                            self._run_task(task_id, coroutine)
+                        )
+                        self._running_tasks[task_id] = asyncio_task
+                        task.state = TaskState.RUNNING
+                        task.started_at = datetime.now().isoformat()
+                        logging.info(f"🚀 Started queued task: {task.name} ({task_id})")
+                        break
 
     async def update_progress(
         self,
@@ -301,6 +379,56 @@ class BackgroundTaskManager:
                     lines.append(f"  ... and {len(pending) - 3} more")
             
             return "\n".join(lines)
+    
+    async def format_completion_message(self, task: BackgroundTask) -> str:
+        """Format a completion message for Sakura to speak"""
+        duration = self._calculate_duration(task)
+        
+        if task.state == TaskState.COMPLETED:
+            # Format result summary
+            result_summary = ""
+            if task.result:
+                if isinstance(task.result, dict):
+                    if 'message' in task.result:
+                        result_summary = task.result['message']
+                    elif 'data' in task.result:
+                        data = task.result['data']
+                        if isinstance(data, list):
+                            result_summary = f"Found {len(data)} results"
+                        else:
+                            result_summary = str(data)[:100]
+                elif isinstance(task.result, str):
+                    result_summary = task.result[:100]
+                else:
+                    result_summary = str(task.result)[:100]
+            
+            if result_summary:
+                return f"Hey! Your task '{task.name}' is done. It took {duration}. {result_summary}"
+            else:
+                return f"Hey! Your task '{task.name}' is complete. It took {duration}."
+        
+        elif task.state == TaskState.FAILED:
+            return f"Sorry, the task '{task.name}' failed after {duration}. Error: {task.error or 'Unknown error'}"
+        
+        elif task.state == TaskState.CANCELLED:
+            return f"The task '{task.name}' was cancelled."
+        
+        else:
+            return f"Task '{task.name}' status: {task.state.value}"
+    
+    async def get_completion_announcements(self) -> List[str]:
+        """Get formatted announcements for all newly completed tasks"""
+        completed = await self.get_newly_completed_tasks()
+        announcements = []
+        
+        for task_info in completed:
+            task_id = task_info['id']
+            if task_id in self._tasks:
+                task = self._tasks[task_id]
+                announcement = await self.format_completion_message(task)
+                announcements.append(announcement)
+        
+        return announcements
     
     async def cleanup_old_tasks(self, max_age: timedelta = None):
         """Remove old completed/failed tasks"""

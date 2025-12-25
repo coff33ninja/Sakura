@@ -274,6 +274,72 @@ COMMON MCP SERVERS (run with windows run_command "uvx <server>"):
         logging.info(f"🎭 Personality mode: {CURRENT_PERSONALITY}")
         return True
     
+    async def submit_background_task(
+        self, 
+        name: str, 
+        description: str, 
+        tool_name: str, 
+        tool_args: dict,
+        timeout_minutes: int = 10
+    ) -> str:
+        """Submit a tool call to run in the background
+        
+        Args:
+            name: Short name for the task
+            description: What the task does (for user notification)
+            tool_name: Name of the tool to execute
+            tool_args: Arguments for the tool
+            timeout_minutes: Timeout in minutes
+        
+        Returns:
+            Task ID
+        """
+        async def run_tool(task):
+            """Coroutine that runs the tool"""
+            result = await self.tool_registry.execute_tool(tool_name, **tool_args)
+            
+            # Log the action
+            await self._log_action(tool_name, tool_args, result)
+            
+            # Return result in a format the notification can use
+            return {
+                "status": result.status.value,
+                "message": result.message,
+                "data": result.data,
+                "error": result.error
+            }
+        
+        task_id = await self.background_task_manager.submit_task(
+            name=name,
+            description=description,
+            coroutine=run_tool,
+            timeout_minutes=timeout_minutes
+        )
+        
+        return task_id
+    
+    def _is_long_running_action(self, tool_name: str, action: str, args: dict) -> bool:
+        """Determine if an action is likely to be long-running"""
+        # Actions that are typically long-running
+        long_running_actions = {
+            "system_info": ["find_file", "find_app_path"],
+            "windows": ["search_files"],
+            "developer": ["git_clone", "pip_install", "npm_install", "winget_install"],
+        }
+        
+        # Check if this tool/action combo is long-running
+        if tool_name in long_running_actions:
+            if action in long_running_actions[tool_name]:
+                return True
+        
+        # Check for specific indicators in args
+        # Searching all drives is long-running
+        if action in ["find_file", "find_app_path", "search_files"]:
+            if not args.get("search_path") and not args.get("search_drive") and not args.get("path"):
+                return True  # Searching all drives
+        
+        return False
+    
     async def run(self):
         """Main application loop"""
         self.running = True
@@ -291,7 +357,8 @@ COMMON MCP SERVERS (run with windows run_command "uvx <server>"):
             self._tasks = [
                 asyncio.create_task(self._process_audio()),
                 asyncio.create_task(self._handle_responses()),
-                asyncio.create_task(self._play_audio_queue())
+                asyncio.create_task(self._play_audio_queue()),
+                asyncio.create_task(self._check_background_tasks())
             ]
             
             # Wait for tasks (they run until self.running = False)
@@ -303,6 +370,38 @@ COMMON MCP SERVERS (run with windows run_command "uvx <server>"):
             logging.error(f"Error in main loop: {e}")
         finally:
             await self._shutdown()
+    
+    async def _check_background_tasks(self):
+        """Periodically check for completed background tasks and notify user"""
+        while self.running:
+            try:
+                # Check every 2 seconds
+                await asyncio.sleep(2)
+                
+                if not self.background_task_manager:
+                    continue
+                
+                # Check if there are completed tasks to announce
+                if await self.background_task_manager.has_pending_notifications():
+                    announcements = await self.background_task_manager.get_completion_announcements()
+                    
+                    for announcement in announcements:
+                        logging.info(f"📢 Background task notification: {announcement}")
+                        
+                        # Send the announcement to Gemini so Sakura can speak it
+                        # We'll inject it as a system message that Sakura should relay
+                        try:
+                            await self.gemini_client.send_text(
+                                f"[BACKGROUND TASK COMPLETED - Tell the user naturally]: {announcement}"
+                            )
+                        except Exception as e:
+                            logging.error(f"Error sending task notification: {e}")
+                            # Fallback: just print it
+                            print(f"📢 {announcement}")
+                
+            except Exception as e:
+                logging.debug(f"Error checking background tasks: {e}")
+                await asyncio.sleep(5)
     
     async def stop(self):
         """Stop the application gracefully"""
@@ -456,7 +555,43 @@ COMMON MCP SERVERS (run with windows run_command "uvx <server>"):
             # Record last action for correction context
             await self.user_preferences.record_last_action(tool_name, action, tool_args)
             
-            # Execute tool via registry
+            # Check if this is a long-running action that should run in background
+            if self._is_long_running_action(tool_name, action, tool_args):
+                # Submit to background and respond immediately
+                task_name = f"{tool_name}.{action}"
+                task_description = f"Running {action} on {tool_name}"
+                
+                # Add context to description
+                if action == "find_file":
+                    task_description = f"Searching for '{tool_args.get('name', 'files')}'"
+                elif action == "find_app_path":
+                    task_description = f"Finding '{tool_args.get('app_name', 'application')}'"
+                elif action == "search_files":
+                    task_description = f"Searching for '{tool_args.get('query', 'files')}'"
+                
+                task_id = await self.submit_background_task(
+                    name=task_name,
+                    description=task_description,
+                    tool_name=tool_name,
+                    tool_args=tool_args,
+                    timeout_minutes=10
+                )
+                
+                # Get current queue status
+                status = await self.background_task_manager.get_all_tasks_status()
+                queue_info = ""
+                if status['total_pending'] > 0:
+                    queue_info = f" There are {status['total_pending']} other tasks in the queue."
+                
+                response_text = f"I've started that task in the background (ID: {task_id}). {task_description}. I'll let you know when it's done!{queue_info} Is there anything else you'd like me to do while we wait?"
+                
+                logging.info(f"📋 Submitted background task: {task_id} - {task_description}")
+                
+                # Send response back to Gemini
+                await self.gemini_client.send_function_response(call_id, tool_name, response_text)
+                continue  # Skip normal execution
+            
+            # Execute tool via registry (normal synchronous execution)
             result = await self.tool_registry.execute_tool(tool_name, **tool_args)
             
             # Log action to memory for history
