@@ -67,9 +67,22 @@ desktop.ini
 # Backups (large files)
 backups/*.zip
 
-# Test files
+# Test files and pytest
 test_*.py
 !test_live.py
-backups/sakura_wake_word/Sakura_en_windows_v4_0_0.ppn
+tests/
+.pytest_cache/
+.hypothesis/
+pytest.ini
+conftest.py
+htmlcov/
+.coverage
+coverage.xml
+
+# Config test files
 conversation_context.json
 error_recovery_log.json
+user_preferences.json
+
+# Wake word files
+backups/sakura_wake_word/Sakura_en_windows_v4_0_0.ppn

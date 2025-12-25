@@ -263,7 +263,8 @@ class UserPreferences:
                 # Case-insensitive replacement
                 pattern = re.compile(re.escape(shortcut.phrase), re.IGNORECASE)
                 if pattern.search(result):
-                    result = pattern.sub(shortcut.expansion, result)
+                    # Use lambda to avoid backslash interpretation in replacement
+                    result = pattern.sub(lambda m: shortcut.expansion, result)
                     shortcut.use_count += 1
                     logging.debug(f"Expanded shortcut: '{shortcut.phrase}' -> '{shortcut.expansion}'")
             
@@ -316,9 +317,9 @@ class UserPreferences:
                     modified_args[arg_name] = pref.value
                     logging.debug(f"Applied preference: {arg_name} = {pref.value}")
             
-            # Apply general preferences
+            # Apply general preferences (use internal method without lock)
             if tool_name == "windows" and action == "run_command":
-                shell_pref = await self.get_preference("shell", "default")
+                shell_pref = self._get_preference_unlocked("shell", "default")
                 if shell_pref and "shell" not in modified_args:
                     modified_args["shell"] = shell_pref
             
@@ -326,22 +327,39 @@ class UserPreferences:
                 # Check for app-specific preferences
                 app = args.get("app", "").lower()
                 if app in ["browser", "web browser"]:
-                    browser_pref = await self.get_preference("apps", "browser")
+                    browser_pref = self._get_preference_unlocked("apps", "browser")
                     if browser_pref:
                         modified_args["app"] = browser_pref
                 elif app in ["editor", "text editor", "code editor"]:
-                    editor_pref = await self.get_preference("apps", "editor")
+                    editor_pref = self._get_preference_unlocked("apps", "editor")
                     if editor_pref:
                         modified_args["app"] = editor_pref
             
-            # Expand shortcuts in string arguments
+            # Expand shortcuts in string arguments (use internal method without lock)
             for key, value in modified_args.items():
                 if isinstance(value, str):
-                    expanded = await self.expand_shortcuts(value)
+                    expanded = self._expand_shortcuts_unlocked(value)
                     if expanded != value:
                         modified_args[key] = expanded
             
             return modified_args
+    
+    def _get_preference_unlocked(self, category: str, key: str, default: Any = None) -> Any:
+        """Get a user preference without acquiring lock (internal use only)"""
+        pref_key = f"{category}.{key}"
+        if pref_key in self._preferences:
+            return self._preferences[pref_key].value
+        return default
+    
+    def _expand_shortcuts_unlocked(self, text: str) -> str:
+        """Expand shortcuts without acquiring lock (internal use only)"""
+        result = text
+        for phrase_lower, shortcut in self._shortcuts.items():
+            pattern = re.compile(re.escape(shortcut.phrase), re.IGNORECASE)
+            if pattern.search(result):
+                result = pattern.sub(lambda m: shortcut.expansion, result)
+                shortcut.use_count += 1
+        return result
     
     async def get_all_preferences(self) -> Dict[str, Any]:
         """Get all preferences as a dictionary"""
@@ -403,28 +421,33 @@ class UserPreferences:
         if not success:
             return
         
-        async with self._lock:
-            # Infer shell preference
-            if tool_name == "windows" and action == "run_command":
-                shell = args.get("shell")
-                if shell:
+        # Infer shell preference
+        if tool_name == "windows" and action == "run_command":
+            shell = args.get("shell")
+            if shell:
+                async with self._lock:
                     pref_key = "shell.default"
                     if pref_key not in self._preferences:
-                        await self.set_preference("shell", "default", shell, "inferred")
+                        # Use internal method to avoid deadlock
+                        pass
+                # Set preference outside the lock check
+                existing = await self.get_preference("shell", "default")
+                if existing is None:
+                    await self.set_preference("shell", "default", shell, "inferred")
+        
+        # Infer browser preference
+        if action == "open_app":
+            app = args.get("app", "").lower()
+            if app in ["chrome", "firefox", "edge", "brave", "opera", "vivaldi"]:
+                existing = await self.get_preference("apps", "browser")
+                if existing is None:
+                    await self.set_preference("apps", "browser", app, "inferred")
             
-            # Infer browser preference
-            if action == "open_app":
-                app = args.get("app", "").lower()
-                if app in ["chrome", "firefox", "edge", "brave", "opera", "vivaldi"]:
-                    pref_key = "apps.browser"
-                    if pref_key not in self._preferences:
-                        await self.set_preference("apps", "browser", app, "inferred")
-                
-                # Infer editor preference
-                if app in ["code", "vscode", "notepad++", "sublime", "atom", "vim", "nvim"]:
-                    pref_key = "apps.editor"
-                    if pref_key not in self._preferences:
-                        await self.set_preference("apps", "editor", app, "inferred")
+            # Infer editor preference
+            if app in ["code", "vscode", "notepad++", "sublime", "atom", "vim", "nvim"]:
+                existing = await self.get_preference("apps", "editor")
+                if existing is None:
+                    await self.set_preference("apps", "editor", app, "inferred")
     
     async def _save_preferences(self):
         """Save preferences to file"""
@@ -521,7 +544,8 @@ class UserPreferences:
     
     async def cleanup(self):
         """Save preferences before shutdown"""
+        # Call cleanup_expired first (it has its own lock)
+        await self.cleanup_expired()
         async with self._lock:
-            await self.cleanup_expired()
             await self._save_preferences()
             logging.info("User preferences saved")

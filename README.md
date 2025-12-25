@@ -1,5 +1,20 @@
 # 🌸 Sakura - Ultimate Windows AI Assistant
 
+> ## ⚠️ EXPERIMENTAL SOFTWARE WARNING
+> 
+> **Sakura is a research-grade AI agent, NOT a production-safe consumer product.**
+> 
+> - Can generate and execute arbitrary code on your system
+> - Can self-modify its own source code
+> - Can access network, files, and system resources
+> - Safeguards are soft limits that can be bypassed
+> - Should be run in isolated/sandboxed environments
+> 
+> **Required reading before use:**
+> - [SECURITY.md](SECURITY.md) — Threat model, attack scenarios, incident response
+> - [HARDENING.md](HARDENING.md) — How to run Sakura more safely
+> - [docs/ETHICS_AND_ACCESSIBILITY.md](docs/ETHICS_AND_ACCESSIBILITY.md) — Risks, abuse scenarios, data retention
+
 **Sakura** is a fully autonomous AI assistant with real-time voice interaction, complete Windows control, self-learning memory, and script generation capabilities. She can control your PC, remember everything, create and execute scripts, and learn about your system over time.
 
 > *"Hey Sakura, find my project files and create a backup script"* - She'll search all drives, remember the locations, write the script, and execute it.
@@ -306,27 +321,71 @@ Sakura automatically remembers:
 | `important_dates` | Birthdays, anniversaries |
 | `session_stats` | Usage statistics |
 
-## 🔒 Security Notes
+## ⚠️ Important: What Sakura Actually Is
 
-- Scripts are always saved before execution for review
-- Sensitive environment variables are hidden in memory
-- API keys stored only in `.env` file
-- No conversation audio is stored locally
+**Sakura is not a "safe" consumer product.** It is an experimental, open-source AI agent with system-level capabilities.
+
+This means:
+- **Prompt manipulation is possible** — this is a property of the system, not a bug
+- **Safeguards are speed bumps, not walls** — they create friction, not prevention
+- **Users own their installation** — and the responsibility that comes with it
+- **Sakura is closer to PowerShell than to Siri** — it's a powerful tool, not a locked-down assistant
+
+Ichoose **transparency over false promises** and **responsibility over hype**.
+
+📖 **[Security Policy](SECURITY.md)** — Threat model, reporting, and honest limitations
+
+## 🔒 Security Notes — Honest Assessment
+
+**What Sakura CAN do (with the right prompt):**
+- Generate and execute arbitrary scripts
+- Self-modify its own Python source code
+- Access any network endpoint
+- Request privilege elevation (UAC prompt)
+- Schedule persistent tasks
+- Rewrite its own guardrails
+
+**What currently exists:**
+- Scripts saved before execution (user can review)
+- Actions logged to visible file
+- Runs as user-level process by default
+- No automatic execution without user presence
+
+**What does NOT exist yet:**
+- Hard script sandboxing
+- Self-modification detection
+- Network egress monitoring
+- Destructive action friction
+
+📖 **[Security Policy](SECURITY.md)** — Full threat model, attack scenarios, incident response, planned countermeasures
+
+📖 **[Hardening Guide](HARDENING.md)** — How to run Sakura more safely (VMs, firewalls, monitoring)
+
+📖 **[Contributing Guidelines](CONTRIBUTING.md)** — Security-focused contribution requirements
 
 ## ♿ Accessibility & Ethics
 
-Sakura can be a powerful tool for **accessibility** - enabling users with physical disabilities, visual impairments, or cognitive challenges to control their computers through voice alone.
+Sakura can be a powerful tool for **accessibility** — enabling users with physical disabilities, visual impairments, or cognitive challenges to control their computers through voice alone.
 
-However, powerful tools require responsible use. Please read our full guide:
+However, powerful tools require responsible use and honest documentation.
 
 📖 **[Ethics, Accessibility & Responsible Use](docs/ETHICS_AND_ACCESSIBILITY.md)**
 
 This document covers:
 - ✅ How Sakura helps users with disabilities
 - ✅ Positive use cases (productivity, learning, creative work)
-- ⚠️ Potential risks and misuse scenarios
-- 🛡️ Built-in safeguards
+- ⚠️ Potential risks and the manipulation reality
+- 🛡️ Built-in safeguards (and their limitations)
 - 📋 Responsible use guidelines
+- 🎭 Personality modes and responsible interaction
+
+📖 **[Security Policy](SECURITY.md)**
+
+This document covers:
+- 🔐 Threat model (what Iprotect against, what Ican't)
+- 🚨 Vulnerability reporting procedures
+- ⚠️ The honest reality of open-source AI agents
+- 👤 User security responsibilities
 
 ## 📋 Requirements
 

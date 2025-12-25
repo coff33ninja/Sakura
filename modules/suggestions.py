@@ -177,8 +177,9 @@ class SuggestionEngine:
         """Initialize suggestion engine"""
         async with self._lock:
             try:
-                await self._load_history()
+                # Build suggestions first, then load history to restore stats
                 self._build_suggestions()
+                await self._load_history()
                 logging.info(f"Suggestion engine initialized with {len(self._suggestions)} suggestions")
                 return True
             except Exception as e:
