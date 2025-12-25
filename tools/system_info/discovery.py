@@ -43,6 +43,7 @@ class SystemDiscovery(BaseTool):
             "get_environment": self._get_environment,
             "explore_folder": self._explore_folder,
             "find_app_path": self._find_app_path,
+            "find_file": self._find_file,
             "get_startup_apps": self._get_startup_apps,
             "get_recent_files": self._get_recent_files,
             "get_display_info": self._get_display_info,
@@ -873,6 +874,236 @@ class SystemDiscovery(BaseTool):
         except Exception as e:
             return ToolResult(status=ToolStatus.ERROR, error=str(e))
     
+    async def _find_file(self, name: str, file_type: str = "any", search_path: str = None, max_results: int = 20) -> ToolResult:
+        """Find any file by name - executables, documents, images, videos, music, or any file type
+        
+        Args:
+            name: Name or partial name to search for
+            file_type: Type of file to find: "any", "exe", "document", "image", "video", "audio", "archive", "code"
+            search_path: Specific path to search (drive letter like "D:" or full path). Searches all drives if not specified.
+            max_results: Maximum number of results to return (default 20)
+        """
+        try:
+            name_lower = name.lower()
+            found = []
+            
+            # Define file extensions by type
+            type_extensions = {
+                "exe": [".exe", ".msi", ".bat", ".cmd", ".ps1", ".com", ".scr"],
+                "document": [".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx", ".txt", ".rtf", ".odt", ".ods", ".odp", ".csv", ".md", ".epub"],
+                "image": [".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp", ".svg", ".ico", ".tiff", ".tif", ".raw", ".psd", ".ai"],
+                "video": [".mp4", ".mkv", ".avi", ".mov", ".wmv", ".flv", ".webm", ".m4v", ".mpeg", ".mpg", ".3gp"],
+                "audio": [".mp3", ".wav", ".flac", ".aac", ".ogg", ".wma", ".m4a", ".opus", ".aiff"],
+                "archive": [".zip", ".rar", ".7z", ".tar", ".gz", ".bz2", ".xz", ".iso"],
+                "code": [".py", ".js", ".ts", ".java", ".cpp", ".c", ".h", ".cs", ".go", ".rs", ".rb", ".php", ".html", ".css", ".json", ".xml", ".yaml", ".yml", ".sql"],
+            }
+            
+            # Build extension filter
+            if file_type == "any":
+                ext_filter = "*"
+            elif file_type in type_extensions:
+                ext_filter = type_extensions[file_type]
+            else:
+                ext_filter = "*"
+            
+            # Determine search paths
+            if search_path:
+                # Normalize path
+                if len(search_path) <= 2:
+                    search_path = search_path.rstrip(':').upper() + ":\\"
+                search_paths = [search_path]
+            else:
+                # Get all fixed drives
+                drives_result = await self._run_ps(
+                    "Get-PSDrive -PSProvider FileSystem | Where-Object { $_.Free -ne $null } | Select-Object -ExpandProperty Root"
+                )
+                if drives_result:
+                    search_paths = [d.strip() for d in drives_result.split('\n') if d.strip()]
+                else:
+                    search_paths = ["C:\\"]
+            
+            # Build PowerShell search command
+            if isinstance(ext_filter, list):
+                ext_pattern = ",".join([f"'*{ext}'" for ext in ext_filter])
+                include_clause = f"-Include {ext_pattern}"
+            else:
+                include_clause = ""
+            
+            for search_root in search_paths:
+                if len(found) >= max_results:
+                    break
+                    
+                # Use PowerShell for efficient recursive search with depth limit
+                ps_cmd = f'''
+                $results = @()
+                $searchRoot = "{search_root}"
+                $searchName = "*{name}*"
+                $maxDepth = 4
+                
+                function Search-Files {{
+                    param($path, $depth)
+                    if ($depth -gt $maxDepth) {{ return }}
+                    
+                    try {{
+                        # Search files in current directory
+                        Get-ChildItem -Path $path -File -Filter $searchName -ErrorAction SilentlyContinue {include_clause} | 
+                            Select-Object -First {max_results - len(found)} |
+                            ForEach-Object {{
+                                $results += @{{
+                                    Name = $_.Name
+                                    Path = $_.FullName
+                                    Size = $_.Length
+                                    Extension = $_.Extension
+                                    Modified = $_.LastWriteTime.ToString("yyyy-MM-dd HH:mm")
+                                    Type = "file"
+                                }}
+                            }}
+                        
+                        # Also find folders matching the name
+                        Get-ChildItem -Path $path -Directory -Filter $searchName -ErrorAction SilentlyContinue |
+                            Select-Object -First 5 |
+                            ForEach-Object {{
+                                $results += @{{
+                                    Name = $_.Name
+                                    Path = $_.FullName
+                                    Type = "folder"
+                                }}
+                            }}
+                        
+                        # Recurse into subdirectories
+                        if ($results.Count -lt {max_results}) {{
+                            Get-ChildItem -Path $path -Directory -ErrorAction SilentlyContinue | ForEach-Object {{
+                                if ($results.Count -lt {max_results}) {{
+                                    Search-Files -path $_.FullName -depth ($depth + 1)
+                                }}
+                            }}
+                        }}
+                    }} catch {{}}
+                }}
+                
+                # Start search from common locations first for speed
+                $priorityPaths = @(
+                    "$searchRoot",
+                    "$searchRoot\\Users",
+                    "$searchRoot\\Program Files",
+                    "$searchRoot\\Program Files (x86)",
+                    "$searchRoot\\Games"
+                )
+                
+                foreach ($p in $priorityPaths) {{
+                    if ((Test-Path $p) -and ($results.Count -lt {max_results})) {{
+                        Search-Files -path $p -depth 0
+                    }}
+                }}
+                
+                $results | Select-Object -First {max_results} | ConvertTo-Json -Depth 2
+                '''
+                
+                result = await self._run_ps(ps_cmd, timeout=60)
+                if result:
+                    try:
+                        data = json.loads(result)
+                        if isinstance(data, dict):
+                            data = [data]
+                        for item in data:
+                            if item and item.get('Path'):
+                                # Format size nicely
+                                if item.get('Size'):
+                                    size_bytes = item['Size']
+                                    if size_bytes > 1073741824:
+                                        item['SizeFormatted'] = f"{size_bytes / 1073741824:.1f} GB"
+                                    elif size_bytes > 1048576:
+                                        item['SizeFormatted'] = f"{size_bytes / 1048576:.1f} MB"
+                                    elif size_bytes > 1024:
+                                        item['SizeFormatted'] = f"{size_bytes / 1024:.1f} KB"
+                                    else:
+                                        item['SizeFormatted'] = f"{size_bytes} bytes"
+                                found.append(item)
+                    except json.JSONDecodeError:
+                        pass
+            
+            # Also check Windows Search Index for faster results (if available)
+            if len(found) < max_results:
+                index_cmd = f'''
+                try {{
+                    $searcher = New-Object -ComObject Microsoft.Search.Interop.CSearchManager
+                    $catalog = $searcher.GetCatalog("SystemIndex")
+                    $conn = New-Object System.Data.OleDb.OleDbConnection
+                    $conn.ConnectionString = "Provider=Search.CollatorDSO;Extended Properties='Application=Windows'"
+                    $conn.Open()
+                    
+                    $query = "SELECT TOP {max_results - len(found)} System.ItemName, System.ItemPathDisplay, System.Size, System.DateModified FROM SystemIndex WHERE System.ItemName LIKE '%{name}%'"
+                    $cmd = New-Object System.Data.OleDb.OleDbCommand($query, $conn)
+                    $reader = $cmd.ExecuteReader()
+                    
+                    $results = @()
+                    while ($reader.Read()) {{
+                        $results += @{{
+                            Name = $reader["System.ItemName"]
+                            Path = $reader["System.ItemPathDisplay"]
+                            Size = $reader["System.Size"]
+                            Modified = $reader["System.DateModified"]
+                            Source = "WindowsIndex"
+                        }}
+                    }}
+                    $conn.Close()
+                    $results | ConvertTo-Json
+                }} catch {{}}
+                '''
+                index_result = await self._run_ps(index_cmd, timeout=10)
+                if index_result:
+                    try:
+                        data = json.loads(index_result)
+                        if isinstance(data, dict):
+                            data = [data]
+                        for item in data:
+                            if item and item.get('Path'):
+                                # Case-insensitive name check using name_lower
+                                item_name = item.get('Name', '').lower()
+                                if name_lower not in item_name:
+                                    continue
+                                # Filter by extension if file_type specified
+                                if file_type != "any" and file_type in type_extensions:
+                                    item_ext = Path(item.get('Path', '')).suffix.lower()
+                                    if item_ext not in type_extensions[file_type]:
+                                        continue
+                                # Avoid duplicates
+                                if not any(f.get('Path', '').lower() == item['Path'].lower() for f in found):
+                                    found.append(item)
+                    except json.JSONDecodeError:
+                        pass
+            
+            # Final Python-side filter to ensure case-insensitive matching
+            filtered_found = []
+            for item in found:
+                item_name = item.get('Name', '').lower()
+                item_path = item.get('Path', '').lower()
+                # Check if name matches (case-insensitive)
+                if name_lower in item_name or name_lower in item_path:
+                    # Filter by extension if file_type specified
+                    if file_type != "any" and file_type in type_extensions and item.get('Type') != 'folder':
+                        item_ext = Path(item.get('Path', '')).suffix.lower()
+                        if item_ext not in type_extensions[file_type]:
+                            continue
+                    filtered_found.append(item)
+            
+            # Deduplicate by path
+            seen = set()
+            unique_found = []
+            for item in filtered_found:
+                path_lower = item.get('Path', '').lower()
+                if path_lower and path_lower not in seen:
+                    seen.add(path_lower)
+                    unique_found.append(item)
+            
+            return ToolResult(
+                status=ToolStatus.SUCCESS,
+                data=unique_found[:max_results],
+                message=f"Found {len(unique_found)} {file_type} files matching '{name}'" + (f" in {search_path}" if search_path else " across all drives")
+            )
+        except Exception as e:
+            return ToolResult(status=ToolStatus.ERROR, error=str(e))
+    
     async def _get_startup_apps(self) -> ToolResult:
         """Get apps that run at startup"""
         try:
@@ -1088,7 +1319,7 @@ class SystemDiscovery(BaseTool):
                             "get_pc_info", "get_user_folders", "list_installed_apps",
                             "search_apps", "get_running_apps", "get_hardware",
                             "get_network", "get_drives", "get_environment",
-                            "explore_folder", "find_app_path", "get_startup_apps",
+                            "explore_folder", "find_app_path", "find_file", "get_startup_apps",
                             "get_recent_files", "get_display_info", "get_audio_devices"
                         ],
                         "description": "Discovery action to perform"
@@ -1105,9 +1336,17 @@ class SystemDiscovery(BaseTool):
                     },
                     "query": {"type": "string", "description": "Search query for search_apps"},
                     "path": {"type": "string", "description": "Folder path for explore_folder"},
+                    "search_path": {"type": "string", "description": "Path or drive to search for find_file (e.g., 'D:', 'C:\\Users'). Searches all drives if not specified"},
                     "depth": {"type": "integer", "description": "Exploration depth", "default": 1},
                     "app_name": {"type": "string", "description": "App name for find_app_path"},
                     "search_drive": {"type": "string", "description": "Drive letter to search (e.g., 'D', 'E:') for find_app_path - searches all drives if not specified"},
+                    "name": {"type": "string", "description": "File or folder name to search for (find_file)"},
+                    "file_type": {
+                        "type": "string",
+                        "enum": ["any", "exe", "document", "image", "video", "audio", "archive", "code"],
+                        "description": "Type of file to find: any, exe (executables), document (pdf/doc/txt), image, video, audio, archive (zip/rar), code (source files)"
+                    },
+                    "max_results": {"type": "integer", "description": "Maximum results to return for find_file", "default": 20},
                     "filter_key": {"type": "string", "description": "Filter for environment variables"},
                     "count": {"type": "integer", "description": "Number of recent files", "default": 20}
                 },
