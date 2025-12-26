@@ -399,6 +399,35 @@ class DatabaseManager:
         # Populate FTS if empty
         await self._populate_fts()
     
+    # ==================== Security Validation ====================
+    
+    def _is_valid_table_name(self, table: str) -> bool:
+        """
+        Validate table name to prevent SQL injection attacks.
+        Only allows alphanumeric characters and underscores.
+        
+        Args:
+            table: Table name to validate
+            
+        Returns:
+            bool: True if valid, False otherwise
+        """
+        if not isinstance(table, str) or not table:
+            return False
+        
+        # List of allowed table names (whitelist approach)
+        allowed_tables = {
+            'subjects', 'events', 'tasks', 'reminders', 'todos', 'notes',
+            'connections', 'actions', 'user_feedback', 'learned_corrections',
+            'conversation_exchanges', 'action_history', 'memory_items',
+            'conversation_context', 'error_patterns', 'user_info',
+            'tool_usage', 'connection_profiles', 'extension_scripts',
+            'fts_memory', 'conversation_exchanges_fts', 'event_search',
+            'memory_full_text'
+        }
+        
+        return table.lower() in allowed_tables
+    
     # ==================== CRUD Operations ====================
     
     async def insert(self, table: str, data: Dict[str, Any]) -> int:
@@ -413,6 +442,11 @@ class DatabaseManager:
             
             # Convert dicts/lists to JSON strings
             values = [json.dumps(v) if isinstance(v, (dict, list)) else v for v in values]
+            
+            # Validate table name to prevent SQL injection
+            if not self._is_valid_table_name(table):
+                logging.error(f"Invalid table name: {table}")
+                return -1
             
             query = f"INSERT INTO {table} ({columns}) VALUES ({placeholders})"
             
@@ -466,6 +500,11 @@ class DatabaseManager:
             return False
         
         async with self._lock:
+            # Validate table name to prevent SQL injection
+            if not self._is_valid_table_name(table):
+                logging.error(f"Invalid table name: {table}")
+                return False
+            
             set_clause = ', '.join([f"{k} = ?" for k in data.keys()])
             values = list(data.values())
             values = [json.dumps(v) if isinstance(v, (dict, list)) else v for v in values]
@@ -487,6 +526,11 @@ class DatabaseManager:
             return False
         
         async with self._lock:
+            # Validate table name to prevent SQL injection
+            if not self._is_valid_table_name(table):
+                logging.error(f"Invalid table name: {table}")
+                return False
+            
             query = f"DELETE FROM {table} WHERE {where}"
             
             try:
@@ -512,6 +556,11 @@ class DatabaseManager:
             return []
         
         async with self._lock:
+            # Validate table name to prevent SQL injection
+            if not self._is_valid_table_name(table):
+                logging.error(f"Invalid table name: {table}")
+                return []
+            
             query = f"SELECT {columns} FROM {table}"
             
             if where:

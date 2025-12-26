@@ -127,7 +127,13 @@ class MCPClient(BaseTool):
     async def _connect_stdio(self, name: str, config: Dict[str, Any]) -> bool:
         """Connect to stdio-based MCP server"""
         command = config.get("command", [])
-        if not command:
+        if not command or not isinstance(command, list):
+            logging.error(f"Invalid command format for {name}: must be a list")
+            return False
+        
+        # Validate that all command elements are strings
+        if not all(isinstance(arg, str) for arg in command):
+            logging.error(f"Invalid command arguments for {name}: all must be strings")
             return False
         
         env = os.environ.copy()

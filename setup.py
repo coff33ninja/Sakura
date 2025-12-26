@@ -36,7 +36,7 @@ async def install_requirements():
                 print("⚠️  Trying alternative installation method...")
                 result = subprocess.run([
                     sys.executable, "-m", "pip", "install", "-r", "requirements.txt"
-                ], capture_output=True, text=True)
+                ], capture_output=True, text=True, shell=False)
                 if result.returncode != 0:
                     print(f"❌ Alternative installation failed: {result.stderr}")
                     return False
