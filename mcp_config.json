@@ -31,11 +31,11 @@
       ]
     },
     "codacy": {
-      "_comment": "Codacy code quality analysis - requires CODACY_ACCOUNT_TOKEN",
+      "_comment": "Codacy code quality analysis - requires CODACY_ACCOUNT_TOKEN env var",
       "type": "stdio",
       "command": ["npx", "-y", "@codacy/codacy-mcp"],
       "env": {
-        "CODACY_ACCOUNT_TOKEN": "BScQsyc1PudCHod9ckaA"
+        "CODACY_ACCOUNT_TOKEN": "${CODACY_ACCOUNT_TOKEN}"
       }
     }
   },

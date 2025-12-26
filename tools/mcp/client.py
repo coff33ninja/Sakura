@@ -138,7 +138,14 @@ class MCPClient(BaseTool):
         
         env = os.environ.copy()
         if "env" in config:
-            env.update(config["env"])
+            # Substitute environment variables in config values
+            config_env = config["env"]
+            for key, value in config_env.items():
+                if isinstance(value, str) and value.startswith("${") and value.endswith("}"):
+                    # Extract variable name from ${VAR_NAME}
+                    var_name = value[2:-1]
+                    value = os.getenv(var_name, value)
+                env[key] = value
         
         try:
             process = await asyncio.create_subprocess_exec(
