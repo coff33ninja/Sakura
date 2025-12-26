@@ -233,16 +233,16 @@ start.bat
 |------|---------|-------------|
 | `windows` | 46 | Full Windows control, smart clicking, screen reading, hotkeys, power |
 | `system_info` | 16 | System discovery, hardware specs, multi-monitor, file search |
-| `memory` | 22 | Persistent memory with SQLite + JSON |
+| `memory` | 24 | Persistent memory with SQLite + JSON, FTS5, feedback learning |
 | `web_search` | 1 | DuckDuckGo search |
 | `web_fetch` | 1 | URL content extraction |
 | `discord` | 5 | Discord integration |
-| `smart_home` | 6 | Home Assistant |
-| `mcp_client` | 3 | MCP server connection |
+| `smart_home` | 21 | Home Assistant (lights, switches, fans, covers, scenes, automations, energy) |
+| `mcp_client` | 3 | MCP server connection (fixed protocol, 60s timeout) |
 | `productivity` | 23 | Reminders, timers, notes, to-do lists |
 | `developer` | 33 | Git, code execution, packages, SSH |
 
-**Total: 156 tool actions**
+**Total: 173 tool actions**
 
 ## 📁 Project Structure
 
@@ -453,6 +453,36 @@ pygame>=2.5.0
 ```
 
 ## 🎉 Version History
+
+### v1.1.1 - Integration Improvements (2025-12-26)
+
+Fixes and enhancements for MCP and Smart Home integrations.
+
+#### 🔌 MCP Client Fixes
+- Proper MCP protocol initialization (initialize → initialized notification → tools/list)
+- 60-second timeout (up from 5s) for slow servers
+- Multi-line JSON response handling
+- Environment variable support for server configs
+- Better error messages for missing uvx/npx
+- Added `get_schema()` and `cleanup()` methods
+
+#### 🏠 Smart Home Enhancements (21 Actions)
+Expanded from 6 to 21 actions with full Home Assistant support:
+
+| Category | Actions |
+|----------|---------|
+| Lights | `lights_on`, `lights_off`, `set_brightness`, `set_color` |
+| Media | `play_music`, `pause_music`, `stop_music`, `set_volume` |
+| Climate | `set_temperature`, `set_hvac_mode` |
+| Switches | `switch_on`, `switch_off` |
+| Fans | `fan_on`, `fan_off`, `set_fan_speed` |
+| Covers | `cover_open`, `cover_close`, `cover_stop`, `set_cover_position` |
+| Scenes | `activate_scene`, `list_scenes` |
+| Automations | `trigger_automation`, `list_automations` |
+| Energy | `get_energy_usage` |
+| State | `get_device_state`, `list_devices_by_type` |
+
+---
 
 ### v1.1.0 - Intelligent Memory System (2025-12-26)
 

@@ -1,11 +1,17 @@
 """
 MCP Client for Sakura
 Connects to MCP servers to extend Sakura's capabilities - fully async
+
+Supports:
+- uvx (Python) servers - requires uv installed
+- npx (Node.js) servers - requires Node.js installed
+- SSE (HTTP) servers
 """
 import asyncio
 import logging
 import json
 import os
+import shutil
 from typing import Dict, Any, List, Optional
 import httpx
 from ..base import BaseTool, ToolResult, ToolStatus
@@ -19,14 +25,25 @@ class MCPClient(BaseTool):
     def __init__(self, server_config: Optional[Dict[str, Any]] = None):
         self.server_config = server_config or {}
         self.connected_servers: Dict[str, Any] = {}
-        self.server_tools: Dict[str, List[Dict[str, Any]]] = {}  # Tools per server
+        self.server_tools: Dict[str, List[Dict[str, Any]]] = {}
         self._lock = asyncio.Lock()
         self.http_client: Optional[httpx.AsyncClient] = None
         self._processes: Dict[str, asyncio.subprocess.Process] = {}
+        self._has_uvx = False
+        self._has_npx = False
     
     async def initialize(self) -> bool:
         """Initialize MCP connections from config"""
         async with self._lock:
+            # Check for uvx and npx availability
+            self._has_uvx = shutil.which("uvx") is not None
+            self._has_npx = shutil.which("npx") is not None
+            
+            if not self._has_uvx:
+                logging.warning("uvx not found - Python MCP servers disabled. Install uv: https://docs.astral.sh/uv/")
+            if not self._has_npx:
+                logging.warning("npx not found - Node.js MCP servers disabled. Install Node.js: https://nodejs.org/")
+            
             # Load config from environment or file
             config_path = os.getenv("MCP_CONFIG_PATH", "mcp_config.json")
             
@@ -39,18 +56,31 @@ class MCPClient(BaseTool):
                     logging.error(f"Failed to load MCP config: {e}")
             
             # Initialize HTTP client for SSE servers
-            self.http_client = httpx.AsyncClient(timeout=30.0)
+            self.http_client = httpx.AsyncClient(timeout=60.0)
             
             # Connect to configured servers
-            for server_name, config in self.server_config.get("servers", {}).items():
+            servers = self.server_config.get("servers", {})
+            for server_name, config in servers.items():
+                if server_name.startswith("_"):
+                    continue
                 await self._connect_server(server_name, config)
             
-            logging.info(f"MCP client initialized (async): {len(self.connected_servers)} servers")
+            logging.info(f"MCP client initialized: {len(self.connected_servers)} servers")
         return True
     
     async def _connect_server(self, name: str, config: Dict[str, Any]) -> bool:
         """Connect to a single MCP server"""
         server_type = config.get("type", "stdio")
+        command = config.get("command", [])
+        
+        if command:
+            cmd = command[0] if isinstance(command, list) else command
+            if cmd == "uvx" and not self._has_uvx:
+                logging.warning(f"Skipping {name}: uvx not available")
+                return False
+            if cmd == "npx" and not self._has_npx:
+                logging.warning(f"Skipping {name}: npx not available")
+                return False
         
         try:
             if server_type == "stdio":
@@ -70,13 +100,17 @@ class MCPClient(BaseTool):
         if not command:
             return False
         
+        env = os.environ.copy()
+        if "env" in config:
+            env.update(config["env"])
+        
         try:
-            # Start the MCP server process
             process = await asyncio.create_subprocess_exec(
                 *command,
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
+                stderr=asyncio.subprocess.PIPE,
+                env=env
             )
             
             self._processes[name] = process
@@ -86,17 +120,26 @@ class MCPClient(BaseTool):
                 "config": config
             }
             
-            # Get available tools from server
+            await asyncio.sleep(0.5)
+            
+            if process.returncode is not None:
+                stderr = await process.stderr.read()
+                logging.error(f"MCP server {name} exited: {stderr.decode()[:200]}")
+                return False
+            
             tools = await self._get_server_tools_stdio(name)
             self.server_tools[name] = tools
             
-            logging.info(f"Connected to MCP server {name} (stdio): {len(tools)} tools")
+            logging.info(f"Connected to MCP server {name}: {len(tools)} tools")
             return True
             
+        except FileNotFoundError:
+            logging.error(f"MCP server {name} command not found: {command[0]}")
+            return False
         except Exception as e:
             logging.error(f"Failed to start MCP server {name}: {e}")
             return False
-    
+
     async def _connect_sse(self, name: str, config: Dict[str, Any]) -> bool:
         """Connect to SSE-based MCP server"""
         url = config.get("url", "")
@@ -104,7 +147,6 @@ class MCPClient(BaseTool):
             return False
         
         try:
-            # Test connection
             response = await self.http_client.get(f"{url}/health")
             if response.status_code == 200:
                 self.connected_servers[name] = {
@@ -112,16 +154,12 @@ class MCPClient(BaseTool):
                     "url": url,
                     "config": config
                 }
-                
-                # Get available tools
                 tools = await self._get_server_tools_sse(name, url)
                 self.server_tools[name] = tools
-                
                 logging.info(f"Connected to MCP server {name} (SSE): {len(tools)} tools")
                 return True
         except Exception as e:
             logging.error(f"Failed to connect to SSE server {name}: {e}")
-        
         return False
     
     async def _get_server_tools_stdio(self, name: str) -> List[Dict[str, Any]]:
@@ -133,19 +171,38 @@ class MCPClient(BaseTool):
         process = server["process"]
         
         try:
-            # Send tools/list request
+            # Initialize MCP protocol
+            init_request = json.dumps({
+                "jsonrpc": "2.0",
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2024-11-05",
+                    "capabilities": {},
+                    "clientInfo": {"name": "sakura", "version": "1.1.0"}
+                },
+                "id": 0
+            }) + "\n"
+            process.stdin.write(init_request.encode())
+            await process.stdin.drain()
+            
+            await self._read_response(process, timeout=10.0)
+            
+            # Send initialized notification
+            initialized = json.dumps({
+                "jsonrpc": "2.0",
+                "method": "notifications/initialized"
+            }) + "\n"
+            process.stdin.write(initialized.encode())
+            await process.stdin.drain()
+            
+            # Request tools list
             request = json.dumps({"jsonrpc": "2.0", "method": "tools/list", "id": 1}) + "\n"
             process.stdin.write(request.encode())
             await process.stdin.drain()
             
-            # Read response with timeout
-            response_line = await asyncio.wait_for(
-                process.stdout.readline(),
-                timeout=5.0
-            )
-            
-            response = json.loads(response_line.decode())
-            return response.get("result", {}).get("tools", [])
+            response = await self._read_response(process, timeout=10.0)
+            if response:
+                return response.get("result", {}).get("tools", [])
             
         except asyncio.TimeoutError:
             logging.warning(f"Timeout getting tools from {name}")
@@ -153,6 +210,43 @@ class MCPClient(BaseTool):
             logging.error(f"Error getting tools from {name}: {e}")
         
         return []
+    
+    async def _read_response(self, process: asyncio.subprocess.Process, timeout: float = 30.0) -> Optional[Dict]:
+        """Read JSON-RPC response, handling multi-line and initialization messages"""
+        try:
+            end_time = asyncio.get_event_loop().time() + timeout
+            
+            while asyncio.get_event_loop().time() < end_time:
+                remaining = end_time - asyncio.get_event_loop().time()
+                if remaining <= 0:
+                    break
+                
+                try:
+                    response_line = await asyncio.wait_for(
+                        process.stdout.readline(),
+                        timeout=min(remaining, 5.0)
+                    )
+                except asyncio.TimeoutError:
+                    continue
+                
+                if not response_line:
+                    continue
+                
+                line = response_line.decode().strip()
+                if not line:
+                    continue
+                
+                try:
+                    response = json.loads(line)
+                    if "id" in response or "result" in response:
+                        return response
+                except json.JSONDecodeError:
+                    continue
+            
+        except Exception as e:
+            logging.debug(f"Read response error: {e}")
+        
+        return None
     
     async def _get_server_tools_sse(self, name: str, url: str) -> List[Dict[str, Any]]:
         """Get tools from SSE MCP server"""
@@ -166,44 +260,88 @@ class MCPClient(BaseTool):
                 return data.get("result", {}).get("tools", [])
         except Exception as e:
             logging.error(f"Error getting tools from SSE server {name}: {e}")
-        
         return []
+
+    async def execute(self, action: str = "call", server: str = "", tool: str = "", **kwargs) -> ToolResult:
+        """Execute MCP action"""
+        actions = {
+            "call": self._call_tool,
+            "list_servers": self._list_servers,
+            "list_tools": self._list_tools,
+        }
+        
+        if action not in actions:
+            return ToolResult(
+                status=ToolStatus.ERROR,
+                error=f"Unknown action: {action}. Available: {list(actions.keys())}"
+            )
+        
+        return await actions[action](server=server, tool=tool, **kwargs)
     
-    async def execute(self, server: str, tool: str, **kwargs) -> ToolResult:
-        """Execute a tool on an MCP server - async"""
+    async def _call_tool(self, server: str, tool: str, **kwargs) -> ToolResult:
+        """Call a tool on an MCP server"""
         async with self._lock:
             if server not in self.connected_servers:
+                available = list(self.connected_servers.keys())
                 return ToolResult(
                     status=ToolStatus.ERROR,
-                    error=f"Server not connected: {server}",
-                    message="MCP server not found"
+                    error=f"Server not connected: {server}. Available: {available}"
                 )
             
             server_info = self.connected_servers[server]
+            args = {k: v for k, v in kwargs.items() if k not in ["action", "server", "tool"]}
             
             try:
                 if server_info["type"] == "stdio":
-                    return await self._execute_stdio(server, tool, kwargs)
+                    return await self._execute_stdio(server, tool, args)
                 elif server_info["type"] == "sse":
-                    return await self._execute_sse(server, tool, kwargs)
+                    return await self._execute_sse(server, tool, args)
                 else:
-                    return ToolResult(
-                        status=ToolStatus.ERROR,
-                        error="Unknown server type"
-                    )
+                    return ToolResult(status=ToolStatus.ERROR, error="Unknown server type")
             except Exception as e:
                 logging.error(f"MCP tool execution error: {e}")
-                return ToolResult(
-                    status=ToolStatus.ERROR,
-                    error=str(e),
-                    message="Tool execution failed"
-                )
+                return ToolResult(status=ToolStatus.ERROR, error=str(e))
+    
+    async def _list_servers(self, **kwargs) -> ToolResult:
+        """List connected MCP servers"""
+        servers = []
+        for name, info in self.connected_servers.items():
+            tool_count = len(self.server_tools.get(name, []))
+            servers.append({"name": name, "type": info["type"], "tools": tool_count})
+        
+        return ToolResult(
+            status=ToolStatus.SUCCESS,
+            data=servers,
+            message=f"Connected to {len(servers)} MCP servers"
+        )
+    
+    async def _list_tools(self, server: str = "", **kwargs) -> ToolResult:
+        """List tools available on a server or all servers"""
+        if server:
+            tools = self.server_tools.get(server, [])
+            return ToolResult(
+                status=ToolStatus.SUCCESS,
+                data=tools,
+                message=f"{len(tools)} tools on {server}"
+            )
+        else:
+            all_tools = {}
+            for srv, tools in self.server_tools.items():
+                all_tools[srv] = [t.get("name", "unknown") for t in tools]
+            return ToolResult(
+                status=ToolStatus.SUCCESS,
+                data=all_tools,
+                message=f"Tools from {len(all_tools)} servers"
+            )
     
     async def _execute_stdio(self, server: str, tool: str, args: Dict[str, Any]) -> ToolResult:
         """Execute tool on stdio MCP server"""
         process = self._processes.get(server)
         if not process:
             return ToolResult(status=ToolStatus.ERROR, error="Process not found")
+        
+        if process.returncode is not None:
+            return ToolResult(status=ToolStatus.ERROR, error="Server process has exited")
         
         try:
             request = json.dumps({
@@ -216,12 +354,10 @@ class MCPClient(BaseTool):
             process.stdin.write(request.encode())
             await process.stdin.drain()
             
-            response_line = await asyncio.wait_for(
-                process.stdout.readline(),
-                timeout=30.0
-            )
+            response = await self._read_response(process, timeout=60.0)
             
-            response = json.loads(response_line.decode())
+            if not response:
+                return ToolResult(status=ToolStatus.ERROR, error="No response from server")
             
             if "error" in response:
                 return ToolResult(
@@ -230,14 +366,20 @@ class MCPClient(BaseTool):
                 )
             
             result = response.get("result", {})
+            content = result.get("content", result)
+            
+            if isinstance(content, list):
+                texts = [c.get("text", str(c)) for c in content if isinstance(c, dict)]
+                content = "\n".join(texts) if texts else str(content)
+            
             return ToolResult(
                 status=ToolStatus.SUCCESS,
-                data=result.get("content", result),
+                data=content,
                 message=f"Executed {tool} on {server}"
             )
             
         except asyncio.TimeoutError:
-            return ToolResult(status=ToolStatus.ERROR, error="Execution timeout")
+            return ToolResult(status=ToolStatus.ERROR, error="Execution timeout (60s)")
         except Exception as e:
             return ToolResult(status=ToolStatus.ERROR, error=str(e))
     
@@ -267,7 +409,6 @@ class MCPClient(BaseTool):
                         status=ToolStatus.ERROR,
                         error=data["error"].get("message", "Unknown error")
                     )
-                
                 result = data.get("result", {})
                 return ToolResult(
                     status=ToolStatus.SUCCESS,
@@ -275,66 +416,52 @@ class MCPClient(BaseTool):
                     message=f"Executed {tool} on {server}"
                 )
             else:
-                return ToolResult(
-                    status=ToolStatus.ERROR,
-                    error=f"HTTP {response.status_code}"
-                )
+                return ToolResult(status=ToolStatus.ERROR, error=f"HTTP {response.status_code}")
                 
         except Exception as e:
             return ToolResult(status=ToolStatus.ERROR, error=str(e))
     
     def get_schema(self) -> Dict[str, Any]:
-        """Return schema for MCP tool calls"""
+        """Return tool schema for Gemini function calling"""
         return {
             "name": self.name,
             "description": self.description,
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "server": {"type": "string", "description": "MCP server name"},
-                    "tool": {"type": "string", "description": "Tool to execute"},
-                    "args": {"type": "object", "description": "Tool arguments"}
+                    "action": {
+                        "type": "string",
+                        "enum": ["call", "list_servers", "list_tools"],
+                        "description": "MCP action to perform"
+                    },
+                    "server": {
+                        "type": "string",
+                        "description": "MCP server name (for call/list_tools)"
+                    },
+                    "tool": {
+                        "type": "string",
+                        "description": "Tool name to call on the server"
+                    }
                 },
-                "required": ["server", "tool"]
+                "required": ["action"]
             }
         }
     
-    async def list_servers(self) -> List[str]:
-        """List connected MCP servers - async"""
+    async def cleanup(self) -> None:
+        """Cleanup all MCP connections and processes"""
         async with self._lock:
-            return list(self.connected_servers.keys())
-    
-    async def list_server_tools(self, server: str) -> List[Dict[str, Any]]:
-        """List tools available on a server - async"""
-        async with self._lock:
-            return self.server_tools.get(server, [])
-    
-    async def get_all_tools(self) -> Dict[str, List[Dict[str, Any]]]:
-        """Get all tools from all servers - async"""
-        async with self._lock:
-            return self.server_tools.copy()
-    
-    async def cleanup(self):
-        """Disconnect from all MCP servers - async"""
-        async with self._lock:
-            # Terminate stdio processes properly on Windows
-            for name, process in list(self._processes.items()):
+            # Terminate all stdio processes
+            for name, process in self._processes.items():
                 try:
-                    # Close stdin first to signal process to exit
-                    if process.stdin:
-                        process.stdin.close()
-                    
-                    # Try graceful termination
-                    process.terminate()
-                    try:
-                        await asyncio.wait_for(process.wait(), timeout=2.0)
-                    except asyncio.TimeoutError:
-                        # Force kill if it doesn't respond
-                        process.kill()
-                        await asyncio.wait_for(process.wait(), timeout=1.0)
-                except Exception:
-                    # Silently ignore cleanup errors - process may already be dead
-                    pass
+                    if process.returncode is None:
+                        process.terminate()
+                        try:
+                            await asyncio.wait_for(process.wait(), timeout=5.0)
+                        except asyncio.TimeoutError:
+                            process.kill()
+                        logging.info(f"Terminated MCP server: {name}")
+                except Exception as e:
+                    logging.warning(f"Error terminating {name}: {e}")
             
             self._processes.clear()
             self.connected_servers.clear()
@@ -342,10 +469,7 @@ class MCPClient(BaseTool):
             
             # Close HTTP client
             if self.http_client:
-                try:
-                    await self.http_client.aclose()
-                except Exception:
-                    pass
+                await self.http_client.aclose()
                 self.http_client = None
             
-            logging.info("MCP client cleanup completed")
+            logging.info("MCP client cleanup complete")

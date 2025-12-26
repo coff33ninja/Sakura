@@ -5,6 +5,42 @@ All notable changes to Sakura AI will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.1] - 2025-12-26
+
+### 🔌 Integration Improvements
+
+Fixes and enhancements for MCP and Smart Home integrations.
+
+#### Added
+
+**MCP Client Improvements**
+- Proper MCP protocol initialization (initialize → initialized notification → tools/list)
+- 60-second timeout (up from 5s) for slow servers
+- Multi-line JSON response handling
+- Environment variable support for server configs
+- Better error messages for missing uvx/npx
+- `get_schema()` method for Gemini function calling
+- `cleanup()` method for proper process termination
+
+**Smart Home Enhancements (21 Actions)**
+- **Switches**: `switch_on`, `switch_off`
+- **Fans**: `fan_on`, `fan_off`, `set_fan_speed`
+- **Covers/Blinds**: `cover_open`, `cover_close`, `cover_stop`, `set_cover_position`
+- **Scenes**: `activate_scene`, `list_scenes`
+- **Automations**: `trigger_automation`, `list_automations`
+- **Energy**: `get_energy_usage` (monitors power/consumption sensors)
+- **State**: `get_device_state` (full device state with attributes)
+- **Discovery**: `list_devices_by_type` (filter by light, switch, fan, etc.)
+- **Media**: `pause_music`, `stop_music`, `set_volume`
+- **Climate**: `set_hvac_mode` (heat, cool, auto, off)
+
+#### Changed
+- Smart Home actions increased from 6 to 21
+- Total tool actions increased from 156 to 173
+- Better authentication error messages for Home Assistant
+
+---
+
 ## [1.1.0] - 2025-12-26
 
 ### 🧠 Intelligent Memory System
@@ -63,12 +99,36 @@ Major upgrade to Sakura's memory and learning capabilities.
 - `get_history_stats` - Statistics about stored history
 - `log_exchange` - Log full conversation exchange
 
+**MCP Client Improvements**
+- Proper MCP protocol initialization (initialize → initialized notification → tools/list)
+- 60-second timeout (up from 5s) for slow servers
+- Multi-line JSON response handling
+- Environment variable support for server configs
+- Better error messages for missing uvx/npx
+- `get_schema()` method for Gemini function calling
+- `cleanup()` method for proper process termination
+
+**Smart Home Enhancements (21 Actions)**
+- Better authentication error messages
+- **Switches**: `switch_on`, `switch_off`
+- **Fans**: `fan_on`, `fan_off`, `set_fan_speed`
+- **Covers/Blinds**: `cover_open`, `cover_close`, `cover_stop`, `set_cover_position`
+- **Scenes**: `activate_scene`, `list_scenes`
+- **Automations**: `trigger_automation`, `list_automations`
+- **Energy**: `get_energy_usage` (monitors power/consumption sensors)
+- **State**: `get_device_state` (full device state with attributes)
+- **Discovery**: `list_devices_by_type` (filter by light, switch, fan, etc.)
+- **Media**: `pause_music`, `stop_music`, `set_volume`
+- **Climate**: `set_hvac_mode` (heat, cool, auto, off)
+
 #### Changed
 - Memory store now uses SQLite as primary storage
 - JSON files are now exports for transparency (not primary storage)
 - Conversation context logs exchanges to database automatically
 - Tool execution tracks duration and updates patterns
 - Error handling queries known solutions first
+- Smart Home actions increased from 6 to 21
+- Total tool actions increased from 156 to 173
 
 #### Technical
 - Added `aiosqlite>=0.22.1` to requirements
