@@ -5,6 +5,42 @@ All notable changes to Sakura AI will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.1] - 2025-12-26
+
+### 📅 Productivity Database Integration
+
+Notes and todos now use database storage with FTS5 full-text search.
+
+#### Added
+
+**Notes Database Integration (Phase 9)**
+- Notes stored in `notes` table with FTS5 indexing
+- `search_notes_fts` action - Full-text search with BM25 ranking
+- Auto-migrates existing JSON notes on first run
+- JSON backup maintained for transparency
+
+**Todos Database Integration (Phase 9b)**
+- Todos stored in `todos` table for history tracking
+- `search_todos` action - Simple LIKE search
+- `search_todos_fts` action - FTS5 full-text search
+- `get_completed_history` action - Query completed tasks by date range
+- Track task completion history ("what did I finish last month?")
+- Auto-migrates existing JSON todos on first run
+- JSON backup maintained for transparency
+
+#### Changed
+- `tools/productivity/manager.py` - Notes and todos now use database
+- `modules/database.py` - Added `todos` table with indexes
+- Productivity actions increased from 23 to 27
+- Total tool actions: 177 (up from 173)
+
+#### Technical
+- Timers and reminders stay in JSON (ephemeral, no search value)
+- Database enables infinite history with efficient querying
+- FTS5 supports: AND, OR, NOT, "phrase", prefix*
+
+---
+
 ## [1.2.0] - 2025-12-26
 
 ### 🗄️ Database Integration for AI Modules

@@ -29,11 +29,12 @@
 - Package management (pip, npm, winget)
 - SSH connections with saved profiles
 
-### 📅 Productivity (23 Actions)
+### 📅 Productivity (27 Actions)
 - Reminders with Windows notifications
 - Countdown timers and stopwatch
-- Quick notes with tags and search
-- To-do lists with priorities and due dates
+- Quick notes with tags, search, and FTS5 full-text search
+- To-do lists with priorities, due dates, and completion history
+- Task history tracking ("what did I complete last month?")
 
 ### 🎙️ Real-Time Voice Conversation
 - **Gemini Live API** - Natural, low-latency voice interaction
@@ -239,10 +240,10 @@ start.bat
 | `discord` | 5 | Discord integration |
 | `smart_home` | 21 | Home Assistant (lights, switches, fans, covers, scenes, automations, energy) |
 | `mcp_client` | 3 | MCP server connection (fixed protocol, 60s timeout) |
-| `productivity` | 23 | Reminders, timers, notes, to-do lists |
+| `productivity` | 27 | Reminders, timers, notes, to-do lists with FTS search |
 | `developer` | 33 | Git, code execution, packages, SSH |
 
-**Total: 173 tool actions**
+**Total: 177 tool actions**
 
 ## 📁 Project Structure
 
@@ -616,11 +617,12 @@ This is the first stable release of Sakura, consolidating all development work i
 - Package management (pip, npm, winget)
 - SSH connections with saved profiles
 
-#### 📅 Productivity (23 Actions)
+#### 📅 Productivity (27 Actions)
 - Reminders with Windows notifications
 - Countdown timers and stopwatch
-- Quick notes with tags and search
-- To-do lists with priorities and due dates
+- Quick notes with tags, search, and FTS5 full-text search
+- To-do lists with priorities, due dates, and completion history
+- Task history tracking ("what did I complete last month?")
 
 #### 📊 System Discovery (15 Actions)
 - Hardware specs (CPU, RAM, GPU with nvidia-smi)

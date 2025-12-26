@@ -272,6 +272,32 @@ class DatabaseManager:
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
         
+        -- Notes: Quick notes with FTS search support
+        CREATE TABLE IF NOT EXISTS notes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            note_id TEXT UNIQUE NOT NULL,  -- External ID like 'note_1_123456'
+            title TEXT NOT NULL,
+            content TEXT,
+            tags TEXT,                     -- JSON array of tags
+            pinned INTEGER DEFAULT 0,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        
+        -- Todos: Task tracking with history
+        CREATE TABLE IF NOT EXISTS todos (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            todo_id TEXT UNIQUE NOT NULL,  -- External ID like 'todo_1_123456'
+            title TEXT NOT NULL,
+            description TEXT,
+            priority TEXT DEFAULT 'medium',  -- low, medium, high, urgent
+            due_date TIMESTAMP,
+            completed INTEGER DEFAULT 0,
+            completed_at TIMESTAMP,
+            tags TEXT,                     -- JSON array of tags
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        
         -- Create indexes for common queries
         CREATE INDEX IF NOT EXISTS idx_events_subject ON events(subject_id);
         CREATE INDEX IF NOT EXISTS idx_events_type ON events(event_type);
@@ -295,6 +321,13 @@ class DatabaseManager:
         CREATE INDEX IF NOT EXISTS idx_tool_patterns_tool ON tool_patterns(tool_name, action_name);
         CREATE INDEX IF NOT EXISTS idx_error_patterns_tool ON error_patterns(tool_name, action_name);
         CREATE INDEX IF NOT EXISTS idx_error_patterns_type ON error_patterns(error_type);
+        CREATE INDEX IF NOT EXISTS idx_notes_title ON notes(title);
+        CREATE INDEX IF NOT EXISTS idx_notes_pinned ON notes(pinned);
+        CREATE INDEX IF NOT EXISTS idx_notes_updated ON notes(updated_at);
+        CREATE INDEX IF NOT EXISTS idx_todos_completed ON todos(completed);
+        CREATE INDEX IF NOT EXISTS idx_todos_priority ON todos(priority);
+        CREATE INDEX IF NOT EXISTS idx_todos_due_date ON todos(due_date);
+        CREATE INDEX IF NOT EXISTS idx_todos_created ON todos(created_at);
         
         -- FTS5 Full-Text Search virtual table for fast searching
         CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(

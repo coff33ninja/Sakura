@@ -7,6 +7,7 @@ Rules followed:
 - All imports MUST be used
 - Async with asyncio.Lock() for thread safety
 - aiofiles for file I/O
+- Database for notes (FTS search), JSON for ephemeral data (timers/reminders)
 """
 import asyncio
 import logging
@@ -20,6 +21,14 @@ from pathlib import Path
 import json
 import aiofiles
 from ..base import BaseTool, ToolResult, ToolStatus
+
+# Database import for notes storage
+try:
+    from modules.database import DatabaseManager
+    HAS_DATABASE = True
+except ImportError:
+    HAS_DATABASE = False
+    logging.warning("Database module not available - notes will use JSON only")
 
 
 # Get assistant name for data folder
@@ -105,10 +114,10 @@ class ProductivityManager(BaseTool):
         self.data_dir: Path = Path.home() / "Documents" / ASSISTANT_NAME / "productivity"
         self.data_dir.mkdir(parents=True, exist_ok=True)
         
-        # Data files
+        # Data files (JSON for ephemeral data, backup for notes)
         self.reminders_file = self.data_dir / "reminders.json"
         self.timers_file = self.data_dir / "timers.json"
-        self.notes_file = self.data_dir / "notes.json"
+        self.notes_file = self.data_dir / "notes.json"  # Backup for notes
         self.todos_file = self.data_dir / "todos.json"
         
         # In-memory data
@@ -121,10 +130,28 @@ class ProductivityManager(BaseTool):
         self._timer_tasks: Dict[str, asyncio.Task] = {}
         self._reminder_task: Optional[asyncio.Task] = None
         self._counter = 0
+        
+        # Database for notes (FTS search support)
+        self._db: Optional[DatabaseManager] = None
+        self._db_available = False
     
     async def initialize(self) -> bool:
         """Initialize productivity manager and load data"""
         try:
+            # Initialize database for notes and todos (optional)
+            if HAS_DATABASE:
+                try:
+                    self._db = DatabaseManager()
+                    self._db_available = await self._db.initialize()
+                    if self._db_available:
+                        logging.info("Productivity notes/todos using database with FTS search")
+                        # Migrate JSON data to database on first run
+                        await self._migrate_notes_to_db()
+                        await self._migrate_todos_to_db()
+                except Exception as e:
+                    logging.warning(f"Database init failed, using JSON for notes/todos: {e}")
+                    self._db_available = False
+            
             await self._load_all_data()
             
             # Start reminder checker background task
@@ -162,12 +189,16 @@ class ProductivityManager(BaseTool):
             "delete_note": self._delete_note,
             "list_notes": self._list_notes,
             "search_notes": self._search_notes,
+            "search_notes_fts": self._search_notes_fts,  # FTS5 full-text search
             # To-Do
             "add_todo": self._add_todo,
             "complete_todo": self._complete_todo,
             "update_todo": self._update_todo,
             "delete_todo": self._delete_todo,
             "list_todos": self._list_todos,
+            "search_todos": self._search_todos,
+            "search_todos_fts": self._search_todos_fts,  # FTS5 full-text search
+            "get_completed_history": self._get_completed_history,  # Task completion history
             # Windows integration
             "open_alarms_app": self._open_alarms_app,
             "show_notification": self._show_notification,
@@ -530,7 +561,7 @@ class ProductivityManager(BaseTool):
     
     async def _create_note(self, title: str, content: str = "", tags: List[str] = None, 
                            pinned: bool = False, **kwargs) -> ToolResult:
-        """Create a quick note"""
+        """Create a quick note - stored in database with FTS indexing"""
         async with self._lock:
             self._counter += 1
             note_id = f"note_{self._counter}_{datetime.now().strftime('%H%M%S')}"
@@ -547,6 +578,25 @@ class ProductivityManager(BaseTool):
                 pinned=pinned
             )
             
+            # Store in database if available
+            if self._db_available:
+                try:
+                    await self._db.insert("notes", {
+                        "note_id": note_id,
+                        "title": title,
+                        "content": content,
+                        "tags": json.dumps(tags or []),
+                        "pinned": 1 if pinned else 0,
+                        "created_at": now,
+                        "updated_at": now
+                    })
+                    # Index in FTS for fast search
+                    fts_content = f"{title} {content} {' '.join(tags or [])}"
+                    await self._db.index_content(fts_content, "note", self._counter)
+                except Exception as e:
+                    logging.warning(f"Database insert failed, using memory: {e}")
+            
+            # Always keep in memory and save to JSON backup
             self.notes[note_id] = note
             await self._save_notes()
             
@@ -557,8 +607,30 @@ class ProductivityManager(BaseTool):
             )
     
     async def _get_note(self, note_id: str, **kwargs) -> ToolResult:
-        """Get a note by ID"""
+        """Get a note by ID - queries database first, falls back to memory"""
         async with self._lock:
+            # Try database first
+            if self._db_available:
+                try:
+                    db_note = await self._db.select_one("notes", "*", "note_id = ?", (note_id,))
+                    if db_note:
+                        return ToolResult(
+                            status=ToolStatus.SUCCESS,
+                            data={
+                                "id": db_note["note_id"],
+                                "title": db_note["title"],
+                                "content": db_note["content"],
+                                "tags": json.loads(db_note["tags"]) if db_note["tags"] else [],
+                                "pinned": bool(db_note["pinned"]),
+                                "created_at": db_note["created_at"],
+                                "updated_at": db_note["updated_at"]
+                            },
+                            message=f"📝 {db_note['title']}"
+                        )
+                except Exception as e:
+                    logging.warning(f"Database query failed: {e}")
+            
+            # Fallback to memory
             if note_id not in self.notes:
                 return ToolResult(status=ToolStatus.ERROR, error=f"Note not found: {note_id}")
             
@@ -566,43 +638,88 @@ class ProductivityManager(BaseTool):
             return ToolResult(
                 status=ToolStatus.SUCCESS,
                 data=asdict(note),
-                message=f"📝 {note.title}"
+                message=f"�️ {note.title}"
             )
     
     async def _update_note(self, note_id: str, title: str = None, content: str = None,
                            tags: List[str] = None, pinned: bool = None, **kwargs) -> ToolResult:
-        """Update a note"""
+        """Update a note - updates database and memory"""
         async with self._lock:
+            # Check if note exists
             if note_id not in self.notes:
-                return ToolResult(status=ToolStatus.ERROR, error=f"Note not found: {note_id}")
+                # Try to load from database
+                if self._db_available:
+                    db_note = await self._db.select_one("notes", "*", "note_id = ?", (note_id,))
+                    if not db_note:
+                        return ToolResult(status=ToolStatus.ERROR, error=f"Note not found: {note_id}")
+                else:
+                    return ToolResult(status=ToolStatus.ERROR, error=f"Note not found: {note_id}")
             
-            note = self.notes[note_id]
+            note = self.notes.get(note_id)
+            now = datetime.now().isoformat()
+            
+            # Build update data
+            update_data = {"updated_at": now}
             
             if title is not None:
-                note.title = title
+                update_data["title"] = title
+                if note:
+                    note.title = title
             if content is not None:
-                note.content = content
+                update_data["content"] = content
+                if note:
+                    note.content = content
             if tags is not None:
-                note.tags = tags
+                update_data["tags"] = json.dumps(tags)
+                if note:
+                    note.tags = tags
             if pinned is not None:
-                note.pinned = pinned
+                update_data["pinned"] = 1 if pinned else 0
+                if note:
+                    note.pinned = pinned
             
-            note.updated_at = datetime.now().isoformat()
+            if note:
+                note.updated_at = now
+            
+            # Update database
+            if self._db_available:
+                try:
+                    await self._db.update("notes", update_data, "note_id = ?", (note_id,))
+                except Exception as e:
+                    logging.warning(f"Database update failed: {e}")
+            
+            # Save JSON backup
             await self._save_notes()
             
             return ToolResult(
                 status=ToolStatus.SUCCESS,
-                message=f"📝 Updated note: '{note.title}'"
+                message=f"📝 Updated note: '{note.title if note else title}'"
             )
     
     async def _delete_note(self, note_id: str, **kwargs) -> ToolResult:
-        """Delete a note"""
+        """Delete a note - removes from database and memory"""
         async with self._lock:
-            if note_id not in self.notes:
+            title = None
+            
+            # Get title before deletion
+            if note_id in self.notes:
+                title = self.notes[note_id].title
+                del self.notes[note_id]
+            
+            # Delete from database
+            if self._db_available:
+                try:
+                    if not title:
+                        db_note = await self._db.select_one("notes", "title", "note_id = ?", (note_id,))
+                        if db_note:
+                            title = db_note["title"]
+                    await self._db.delete("notes", "note_id = ?", (note_id,))
+                except Exception as e:
+                    logging.warning(f"Database delete failed: {e}")
+            
+            if not title:
                 return ToolResult(status=ToolStatus.ERROR, error=f"Note not found: {note_id}")
             
-            title = self.notes[note_id].title
-            del self.notes[note_id]
             await self._save_notes()
             
             return ToolResult(
@@ -611,10 +728,53 @@ class ProductivityManager(BaseTool):
             )
     
     async def _list_notes(self, tag: str = None, pinned_only: bool = False, **kwargs) -> ToolResult:
-        """List all notes"""
+        """List all notes - queries database for better sorting"""
         async with self._lock:
             notes = []
             
+            # Try database first for better querying
+            if self._db_available:
+                try:
+                    where_clauses = []
+                    params = []
+                    
+                    if pinned_only:
+                        where_clauses.append("pinned = 1")
+                    
+                    where = " AND ".join(where_clauses) if where_clauses else None
+                    
+                    db_notes = await self._db.select(
+                        "notes", "*", where, tuple(params),
+                        order_by="pinned DESC, updated_at DESC",
+                        limit=100
+                    )
+                    
+                    for db_note in db_notes:
+                        note_tags = json.loads(db_note["tags"]) if db_note["tags"] else []
+                        
+                        # Filter by tag if specified
+                        if tag and tag not in note_tags:
+                            continue
+                        
+                        content = db_note["content"] or ""
+                        notes.append({
+                            "id": db_note["note_id"],
+                            "title": db_note["title"],
+                            "preview": content[:100] + "..." if len(content) > 100 else content,
+                            "tags": note_tags,
+                            "pinned": bool(db_note["pinned"]),
+                            "updated_at": db_note["updated_at"]
+                        })
+                    
+                    return ToolResult(
+                        status=ToolStatus.SUCCESS,
+                        data=notes,
+                        message=f"📝 {len(notes)} note(s)"
+                    )
+                except Exception as e:
+                    logging.warning(f"Database query failed, using memory: {e}")
+            
+            # Fallback to memory
             for note in self.notes.values():
                 if pinned_only and not note.pinned:
                     continue
@@ -640,11 +800,41 @@ class ProductivityManager(BaseTool):
             )
     
     async def _search_notes(self, query: str, **kwargs) -> ToolResult:
-        """Search notes by title or content"""
+        """Search notes by title or content (simple LIKE search)"""
         async with self._lock:
             query_lower = query.lower()
             results = []
             
+            # Try database LIKE search
+            if self._db_available:
+                try:
+                    db_results = await self._db.execute_raw(
+                        """SELECT note_id, title, content, tags 
+                           FROM notes 
+                           WHERE title LIKE ? OR content LIKE ?
+                           ORDER BY updated_at DESC
+                           LIMIT 50""",
+                        (f"%{query}%", f"%{query}%")
+                    )
+                    
+                    for row in db_results:
+                        content = row["content"] or ""
+                        results.append({
+                            "id": row["note_id"],
+                            "title": row["title"],
+                            "preview": content[:100] + "..." if len(content) > 100 else content,
+                            "tags": json.loads(row["tags"]) if row["tags"] else []
+                        })
+                    
+                    return ToolResult(
+                        status=ToolStatus.SUCCESS,
+                        data=results,
+                        message=f"🔍 Found {len(results)} note(s) matching '{query}'"
+                    )
+                except Exception as e:
+                    logging.warning(f"Database search failed: {e}")
+            
+            # Fallback to memory search
             for note in self.notes.values():
                 if query_lower in note.title.lower() or query_lower in note.content.lower():
                     results.append({
@@ -660,11 +850,82 @@ class ProductivityManager(BaseTool):
                 message=f"🔍 Found {len(results)} note(s) matching '{query}'"
             )
     
+    async def _search_notes_fts(self, query: str, limit: int = 20, **kwargs) -> ToolResult:
+        """Full-text search notes using FTS5 with ranking
+        
+        Args:
+            query: Search query (supports FTS5 syntax: AND, OR, NOT, "phrase", prefix*)
+            limit: Maximum results to return (default 20)
+        
+        Returns:
+            Ranked search results with relevance scores
+        """
+        async with self._lock:
+            if not self._db_available:
+                # Fallback to simple search
+                return await self._search_notes(query)
+            
+            try:
+                # Use FTS5 search with BM25 ranking
+                fts_results = await self._db.search_fts(query, limit=limit, source_filter="note")
+                
+                if not fts_results:
+                    # Try prefix search if exact match fails
+                    fts_results = await self._db.search_fts(f"{query}*", limit=limit, source_filter="note")
+                
+                results = []
+                seen_ids = set()
+                
+                for fts_row in fts_results:
+                    # Get full note data
+                    source_id = fts_row.get("source_id")
+                    if source_id in seen_ids:
+                        continue
+                    seen_ids.add(source_id)
+                    
+                    # Find the note by searching content match
+                    content_preview = fts_row.get("content", "")[:100]
+                    
+                    # Search for matching note in database
+                    db_notes = await self._db.execute_raw(
+                        """SELECT note_id, title, content, tags, pinned, updated_at
+                           FROM notes 
+                           WHERE title LIKE ? OR content LIKE ?
+                           LIMIT 1""",
+                        (f"%{query}%", f"%{query}%")
+                    )
+                    
+                    if db_notes:
+                        note = db_notes[0]
+                        content = note["content"] or ""
+                        results.append({
+                            "id": note["note_id"],
+                            "title": note["title"],
+                            "preview": content[:100] + "..." if len(content) > 100 else content,
+                            "tags": json.loads(note["tags"]) if note["tags"] else [],
+                            "pinned": bool(note["pinned"]),
+                            "rank": fts_row.get("rank", 0)
+                        })
+                
+                # If FTS didn't find anything, fall back to LIKE search
+                if not results:
+                    return await self._search_notes(query)
+                
+                return ToolResult(
+                    status=ToolStatus.SUCCESS,
+                    data=results,
+                    message=f"🔍 FTS found {len(results)} note(s) for '{query}'"
+                )
+                
+            except Exception as e:
+                logging.warning(f"FTS search failed, using simple search: {e}")
+                return await self._search_notes(query)
+    
     # ==================== TO-DO ====================
     
     async def _add_todo(self, title: str, description: str = "", priority: str = "medium",
                         due_date: str = None, tags: List[str] = None, **kwargs) -> ToolResult:
-        """Add a to-do item"""
+        """Add a to-do item - stored in database for history tracking"""
         async with self._lock:
             self._counter += 1
             todo_id = f"todo_{self._counter}_{datetime.now().strftime('%H%M%S')}"
@@ -676,16 +937,39 @@ class ProductivityManager(BaseTool):
                 if parsed_due:
                     parsed_due = parsed_due.isoformat()
             
+            now = datetime.now().isoformat()
+            
             todo = TodoItem(
                 id=todo_id,
                 title=title,
                 description=description,
                 priority=priority,
                 due_date=parsed_due,
-                created_at=datetime.now().isoformat(),
+                created_at=now,
                 tags=tags or []
             )
             
+            # Store in database if available
+            if self._db_available:
+                try:
+                    await self._db.insert("todos", {
+                        "todo_id": todo_id,
+                        "title": title,
+                        "description": description,
+                        "priority": priority,
+                        "due_date": parsed_due,
+                        "completed": 0,
+                        "completed_at": None,
+                        "tags": json.dumps(tags or []),
+                        "created_at": now
+                    })
+                    # Index in FTS for search
+                    fts_content = f"{title} {description} {' '.join(tags or [])}"
+                    await self._db.index_content(fts_content, "todo", self._counter)
+                except Exception as e:
+                    logging.warning(f"Database insert failed for todo: {e}")
+            
+            # Always keep in memory and save to JSON backup
             self.todos[todo_id] = todo
             await self._save_todos()
             
@@ -698,64 +982,134 @@ class ProductivityManager(BaseTool):
             )
     
     async def _complete_todo(self, todo_id: str, **kwargs) -> ToolResult:
-        """Mark a to-do item as complete"""
+        """Mark a to-do item as complete - updates database for history"""
         async with self._lock:
-            if todo_id not in self.todos:
+            now = datetime.now().isoformat()
+            title = None
+            
+            # Update in memory
+            if todo_id in self.todos:
+                todo = self.todos[todo_id]
+                todo.completed = True
+                todo.completed_at = now
+                title = todo.title
+            
+            # Update in database
+            if self._db_available:
+                try:
+                    if not title:
+                        db_todo = await self._db.select_one("todos", "title", "todo_id = ?", (todo_id,))
+                        if db_todo:
+                            title = db_todo["title"]
+                    
+                    await self._db.update("todos", {
+                        "completed": 1,
+                        "completed_at": now
+                    }, "todo_id = ?", (todo_id,))
+                except Exception as e:
+                    logging.warning(f"Database update failed for todo: {e}")
+            
+            if not title:
                 return ToolResult(status=ToolStatus.ERROR, error=f"Task not found: {todo_id}")
             
-            todo = self.todos[todo_id]
-            todo.completed = True
-            todo.completed_at = datetime.now().isoformat()
             await self._save_todos()
             
             return ToolResult(
                 status=ToolStatus.SUCCESS,
-                message=f"✅ Completed: '{todo.title}'"
+                message=f"✅ Completed: '{title}'"
             )
     
     async def _update_todo(self, todo_id: str, title: str = None, description: str = None,
                            priority: str = None, due_date: str = None, tags: List[str] = None,
                            completed: bool = None, **kwargs) -> ToolResult:
-        """Update a to-do item"""
+        """Update a to-do item - syncs to database"""
         async with self._lock:
-            if todo_id not in self.todos:
+            # Check if exists
+            todo = self.todos.get(todo_id)
+            if not todo and self._db_available:
+                db_todo = await self._db.select_one("todos", "*", "todo_id = ?", (todo_id,))
+                if not db_todo:
+                    return ToolResult(status=ToolStatus.ERROR, error=f"Task not found: {todo_id}")
+            elif not todo:
                 return ToolResult(status=ToolStatus.ERROR, error=f"Task not found: {todo_id}")
             
-            todo = self.todos[todo_id]
+            # Build update data
+            update_data = {}
             
             if title is not None:
-                todo.title = title
+                update_data["title"] = title
+                if todo:
+                    todo.title = title
             if description is not None:
-                todo.description = description
+                update_data["description"] = description
+                if todo:
+                    todo.description = description
             if priority is not None:
-                todo.priority = priority
+                update_data["priority"] = priority
+                if todo:
+                    todo.priority = priority
             if due_date is not None:
                 parsed = self._parse_time(due_date)
-                todo.due_date = parsed.isoformat() if parsed else None
+                parsed_str = parsed.isoformat() if parsed else None
+                update_data["due_date"] = parsed_str
+                if todo:
+                    todo.due_date = parsed_str
             if tags is not None:
-                todo.tags = tags
+                update_data["tags"] = json.dumps(tags)
+                if todo:
+                    todo.tags = tags
             if completed is not None:
-                todo.completed = completed
+                update_data["completed"] = 1 if completed else 0
+                if todo:
+                    todo.completed = completed
                 if completed:
-                    todo.completed_at = datetime.now().isoformat()
+                    now = datetime.now().isoformat()
+                    update_data["completed_at"] = now
+                    if todo:
+                        todo.completed_at = now
                 else:
-                    todo.completed_at = None
+                    update_data["completed_at"] = None
+                    if todo:
+                        todo.completed_at = None
+            
+            # Update database
+            if self._db_available and update_data:
+                try:
+                    await self._db.update("todos", update_data, "todo_id = ?", (todo_id,))
+                except Exception as e:
+                    logging.warning(f"Database update failed for todo: {e}")
             
             await self._save_todos()
             
             return ToolResult(
                 status=ToolStatus.SUCCESS,
-                message=f"📝 Updated task: '{todo.title}'"
+                message=f"📝 Updated task: '{todo.title if todo else title}'"
             )
     
     async def _delete_todo(self, todo_id: str, **kwargs) -> ToolResult:
-        """Delete a to-do item"""
+        """Delete a to-do item - removes from database and memory"""
         async with self._lock:
-            if todo_id not in self.todos:
+            title = None
+            
+            # Get title and remove from memory
+            if todo_id in self.todos:
+                title = self.todos[todo_id].title
+                del self.todos[todo_id]
+            
+            # Delete from database
+            if self._db_available:
+                try:
+                    if not title:
+                        db_todo = await self._db.select_one("todos", "title", "todo_id = ?", (todo_id,))
+                        if db_todo:
+                            title = db_todo["title"]
+                    await self._db.delete("todos", "todo_id = ?", (todo_id,))
+                except Exception as e:
+                    logging.warning(f"Database delete failed for todo: {e}")
+            
+            if not title:
                 return ToolResult(status=ToolStatus.ERROR, error=f"Task not found: {todo_id}")
             
-            title = self.todos[todo_id].title
-            del self.todos[todo_id]
             await self._save_todos()
             
             return ToolResult(
@@ -765,11 +1119,72 @@ class ProductivityManager(BaseTool):
     
     async def _list_todos(self, show_completed: bool = False, priority: str = None,
                           tag: str = None, **kwargs) -> ToolResult:
-        """List to-do items"""
+        """List to-do items - queries database for better filtering"""
         async with self._lock:
             todos = []
             priority_order = {"urgent": 0, "high": 1, "medium": 2, "low": 3}
             
+            # Try database first for better querying
+            if self._db_available:
+                try:
+                    where_clauses = []
+                    params = []
+                    
+                    if not show_completed:
+                        where_clauses.append("completed = 0")
+                    if priority:
+                        where_clauses.append("priority = ?")
+                        params.append(priority)
+                    
+                    where = " AND ".join(where_clauses) if where_clauses else None
+                    
+                    db_todos = await self._db.select(
+                        "todos", "*", where, tuple(params),
+                        order_by="completed ASC, CASE priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END, due_date ASC",
+                        limit=100
+                    )
+                    
+                    for db_todo in db_todos:
+                        todo_tags = json.loads(db_todo["tags"]) if db_todo["tags"] else []
+                        
+                        # Filter by tag if specified
+                        if tag and tag not in todo_tags:
+                            continue
+                        
+                        priority_emoji = {"low": "🟢", "medium": "🟡", "high": "🟠", "urgent": "🔴"}.get(db_todo["priority"], "⚪")
+                        
+                        item = {
+                            "id": db_todo["todo_id"],
+                            "title": db_todo["title"],
+                            "priority": db_todo["priority"],
+                            "priority_emoji": priority_emoji,
+                            "completed": bool(db_todo["completed"]),
+                            "due_date": db_todo["due_date"],
+                            "tags": todo_tags
+                        }
+                        
+                        # Check if overdue
+                        if db_todo["due_date"] and not db_todo["completed"]:
+                            try:
+                                due = datetime.fromisoformat(db_todo["due_date"])
+                                if due < datetime.now():
+                                    item["overdue"] = True
+                            except ValueError:
+                                pass
+                        
+                        todos.append(item)
+                    
+                    pending = sum(1 for t in todos if not t["completed"])
+                    
+                    return ToolResult(
+                        status=ToolStatus.SUCCESS,
+                        data=todos,
+                        message=f"📋 {pending} pending task(s)"
+                    )
+                except Exception as e:
+                    logging.warning(f"Database query failed, using memory: {e}")
+            
+            # Fallback to memory
             for todo in self.todos.values():
                 if not show_completed and todo.completed:
                     continue
@@ -811,6 +1226,195 @@ class ProductivityManager(BaseTool):
                 status=ToolStatus.SUCCESS,
                 data=todos,
                 message=f"📋 {pending} pending task(s)"
+            )
+    
+    async def _search_todos(self, query: str, **kwargs) -> ToolResult:
+        """Search todos by title or description (simple LIKE search)"""
+        async with self._lock:
+            query_lower = query.lower()
+            results = []
+            
+            # Try database LIKE search
+            if self._db_available:
+                try:
+                    db_results = await self._db.execute_raw(
+                        """SELECT todo_id, title, description, priority, completed, due_date, tags 
+                           FROM todos 
+                           WHERE title LIKE ? OR description LIKE ?
+                           ORDER BY completed ASC, created_at DESC
+                           LIMIT 50""",
+                        (f"%{query}%", f"%{query}%")
+                    )
+                    
+                    for row in db_results:
+                        priority_emoji = {"low": "🟢", "medium": "🟡", "high": "🟠", "urgent": "🔴"}.get(row["priority"], "⚪")
+                        results.append({
+                            "id": row["todo_id"],
+                            "title": row["title"],
+                            "description": row["description"] or "",
+                            "priority": row["priority"],
+                            "priority_emoji": priority_emoji,
+                            "completed": bool(row["completed"]),
+                            "due_date": row["due_date"],
+                            "tags": json.loads(row["tags"]) if row["tags"] else []
+                        })
+                    
+                    return ToolResult(
+                        status=ToolStatus.SUCCESS,
+                        data=results,
+                        message=f"🔍 Found {len(results)} task(s) matching '{query}'"
+                    )
+                except Exception as e:
+                    logging.warning(f"Database search failed: {e}")
+            
+            # Fallback to memory search
+            for todo in self.todos.values():
+                if query_lower in todo.title.lower() or query_lower in todo.description.lower():
+                    priority_emoji = {"low": "🟢", "medium": "🟡", "high": "🟠", "urgent": "🔴"}.get(todo.priority, "⚪")
+                    results.append({
+                        "id": todo.id,
+                        "title": todo.title,
+                        "description": todo.description,
+                        "priority": todo.priority,
+                        "priority_emoji": priority_emoji,
+                        "completed": todo.completed,
+                        "tags": todo.tags
+                    })
+            
+            return ToolResult(
+                status=ToolStatus.SUCCESS,
+                data=results,
+                message=f"🔍 Found {len(results)} task(s) matching '{query}'"
+            )
+    
+    async def _search_todos_fts(self, query: str, limit: int = 20, **kwargs) -> ToolResult:
+        """Full-text search todos using FTS5 with ranking
+        
+        Args:
+            query: Search query (supports FTS5 syntax)
+            limit: Maximum results to return
+        """
+        async with self._lock:
+            if not self._db_available:
+                return await self._search_todos(query)
+            
+            try:
+                # Use FTS5 search
+                fts_results = await self._db.search_fts(query, limit=limit, source_filter="todo")
+                
+                if not fts_results:
+                    fts_results = await self._db.search_fts(f"{query}*", limit=limit, source_filter="todo")
+                
+                if not fts_results:
+                    return await self._search_todos(query)
+                
+                # Get full todo data
+                results = []
+                db_todos = await self._db.execute_raw(
+                    """SELECT todo_id, title, description, priority, completed, due_date, tags, completed_at
+                       FROM todos 
+                       WHERE title LIKE ? OR description LIKE ?
+                       ORDER BY completed ASC, created_at DESC
+                       LIMIT ?""",
+                    (f"%{query}%", f"%{query}%", limit)
+                )
+                
+                for row in db_todos:
+                    priority_emoji = {"low": "🟢", "medium": "🟡", "high": "🟠", "urgent": "🔴"}.get(row["priority"], "⚪")
+                    results.append({
+                        "id": row["todo_id"],
+                        "title": row["title"],
+                        "description": row["description"] or "",
+                        "priority": row["priority"],
+                        "priority_emoji": priority_emoji,
+                        "completed": bool(row["completed"]),
+                        "due_date": row["due_date"],
+                        "tags": json.loads(row["tags"]) if row["tags"] else []
+                    })
+                
+                return ToolResult(
+                    status=ToolStatus.SUCCESS,
+                    data=results,
+                    message=f"🔍 FTS found {len(results)} task(s) for '{query}'"
+                )
+                
+            except Exception as e:
+                logging.warning(f"FTS search failed: {e}")
+                return await self._search_todos(query)
+    
+    async def _get_completed_history(self, days: int = 30, limit: int = 50, **kwargs) -> ToolResult:
+        """Get history of completed tasks
+        
+        Args:
+            days: How many days back to look (default 30)
+            limit: Maximum results (default 50)
+        
+        Returns:
+            List of completed tasks with completion dates
+        """
+        async with self._lock:
+            results = []
+            
+            if self._db_available:
+                try:
+                    # Query completed tasks from database
+                    db_todos = await self._db.execute_raw(
+                        """SELECT todo_id, title, description, priority, completed_at, tags, created_at
+                           FROM todos 
+                           WHERE completed = 1 
+                             AND completed_at >= datetime('now', ?)
+                           ORDER BY completed_at DESC
+                           LIMIT ?""",
+                        (f"-{days} days", limit)
+                    )
+                    
+                    for row in db_todos:
+                        priority_emoji = {"low": "🟢", "medium": "🟡", "high": "🟠", "urgent": "🔴"}.get(row["priority"], "⚪")
+                        results.append({
+                            "id": row["todo_id"],
+                            "title": row["title"],
+                            "priority": row["priority"],
+                            "priority_emoji": priority_emoji,
+                            "completed_at": row["completed_at"],
+                            "created_at": row["created_at"],
+                            "tags": json.loads(row["tags"]) if row["tags"] else []
+                        })
+                    
+                    return ToolResult(
+                        status=ToolStatus.SUCCESS,
+                        data=results,
+                        message=f"✅ {len(results)} task(s) completed in last {days} days"
+                    )
+                except Exception as e:
+                    logging.warning(f"Database query failed: {e}")
+            
+            # Fallback to memory (limited history)
+            cutoff = datetime.now() - timedelta(days=days)
+            
+            for todo in self.todos.values():
+                if todo.completed and todo.completed_at:
+                    try:
+                        completed_time = datetime.fromisoformat(todo.completed_at)
+                        if completed_time >= cutoff:
+                            priority_emoji = {"low": "🟢", "medium": "🟡", "high": "🟠", "urgent": "🔴"}.get(todo.priority, "⚪")
+                            results.append({
+                                "id": todo.id,
+                                "title": todo.title,
+                                "priority": todo.priority,
+                                "priority_emoji": priority_emoji,
+                                "completed_at": todo.completed_at,
+                                "tags": todo.tags
+                            })
+                    except ValueError:
+                        pass
+            
+            results.sort(key=lambda x: x["completed_at"], reverse=True)
+            results = results[:limit]
+            
+            return ToolResult(
+                status=ToolStatus.SUCCESS,
+                data=results,
+                message=f"✅ {len(results)} task(s) completed in last {days} days"
             )
 
     
@@ -1064,6 +1668,104 @@ class ProductivityManager(BaseTool):
     
     # ==================== DATA PERSISTENCE ====================
     
+    async def _migrate_notes_to_db(self):
+        """Migrate existing JSON notes to database on first run"""
+        if not self._db_available:
+            return
+        
+        try:
+            # Check if database already has notes
+            count = await self._db.count("notes")
+            if count > 0:
+                logging.info(f"Database already has {count} notes, skipping migration")
+                return
+            
+            # Load from JSON file
+            if not self.notes_file.exists():
+                return
+            
+            async with aiofiles.open(self.notes_file, 'r') as f:
+                data = json.loads(await f.read())
+            
+            if not data:
+                return
+            
+            migrated = 0
+            for item in data:
+                try:
+                    await self._db.insert("notes", {
+                        "note_id": item["id"],
+                        "title": item["title"],
+                        "content": item.get("content", ""),
+                        "tags": json.dumps(item.get("tags", [])),
+                        "pinned": 1 if item.get("pinned", False) else 0,
+                        "created_at": item.get("created_at", datetime.now().isoformat()),
+                        "updated_at": item.get("updated_at", datetime.now().isoformat())
+                    })
+                    
+                    # Index in FTS
+                    fts_content = f"{item['title']} {item.get('content', '')} {' '.join(item.get('tags', []))}"
+                    await self._db.index_content(fts_content, "note", migrated + 1)
+                    
+                    migrated += 1
+                except Exception as e:
+                    logging.warning(f"Failed to migrate note {item.get('id')}: {e}")
+            
+            logging.info(f"Migrated {migrated} notes from JSON to database")
+            
+        except Exception as e:
+            logging.warning(f"Note migration failed: {e}")
+    
+    async def _migrate_todos_to_db(self):
+        """Migrate existing JSON todos to database on first run"""
+        if not self._db_available:
+            return
+        
+        try:
+            # Check if database already has todos
+            count = await self._db.count("todos")
+            if count > 0:
+                logging.info(f"Database already has {count} todos, skipping migration")
+                return
+            
+            # Load from JSON file
+            if not self.todos_file.exists():
+                return
+            
+            async with aiofiles.open(self.todos_file, 'r') as f:
+                data = json.loads(await f.read())
+            
+            if not data:
+                return
+            
+            migrated = 0
+            for item in data:
+                try:
+                    await self._db.insert("todos", {
+                        "todo_id": item["id"],
+                        "title": item["title"],
+                        "description": item.get("description", ""),
+                        "priority": item.get("priority", "medium"),
+                        "due_date": item.get("due_date"),
+                        "completed": 1 if item.get("completed", False) else 0,
+                        "completed_at": item.get("completed_at"),
+                        "tags": json.dumps(item.get("tags", [])),
+                        "created_at": item.get("created_at", datetime.now().isoformat())
+                    })
+                    
+                    # Index in FTS
+                    fts_content = f"{item['title']} {item.get('description', '')} {' '.join(item.get('tags', []))}"
+                    await self._db.index_content(fts_content, "todo", migrated + 1)
+                    
+                    migrated += 1
+                except Exception as e:
+                    logging.warning(f"Failed to migrate todo {item.get('id')}: {e}")
+            
+            logging.info(f"Migrated {migrated} todos from JSON to database")
+            
+        except Exception as e:
+            logging.warning(f"Todo migration failed: {e}")
+    
     async def _load_all_data(self):
         """Load all data from files"""
         await self._load_reminders()
@@ -1112,8 +1814,31 @@ class ProductivityManager(BaseTool):
             logging.error(f"Could not save timers: {e}")
     
     async def _load_notes(self):
-        """Load notes from file"""
+        """Load notes from database (primary) or JSON file (fallback)"""
         try:
+            # Try loading from database first
+            if self._db_available:
+                try:
+                    db_notes = await self._db.select("notes", "*", order_by="updated_at DESC")
+                    for row in db_notes:
+                        note = Note(
+                            id=row["note_id"],
+                            title=row["title"],
+                            content=row["content"] or "",
+                            created_at=row["created_at"],
+                            updated_at=row["updated_at"],
+                            tags=json.loads(row["tags"]) if row["tags"] else [],
+                            pinned=bool(row["pinned"])
+                        )
+                        self.notes[note.id] = note
+                    
+                    if db_notes:
+                        logging.info(f"Loaded {len(db_notes)} notes from database")
+                        return
+                except Exception as e:
+                    logging.warning(f"Database load failed, trying JSON: {e}")
+            
+            # Fallback to JSON file
             if self.notes_file.exists():
                 async with aiofiles.open(self.notes_file, 'r') as f:
                     data = json.loads(await f.read())
@@ -1132,8 +1857,33 @@ class ProductivityManager(BaseTool):
             logging.error(f"Could not save notes: {e}")
     
     async def _load_todos(self):
-        """Load todos from file"""
+        """Load todos from database (primary) or JSON file (fallback)"""
         try:
+            # Try loading from database first
+            if self._db_available:
+                try:
+                    db_todos = await self._db.select("todos", "*", order_by="completed ASC, created_at DESC")
+                    for row in db_todos:
+                        todo = TodoItem(
+                            id=row["todo_id"],
+                            title=row["title"],
+                            description=row["description"] or "",
+                            priority=row["priority"] or "medium",
+                            due_date=row["due_date"],
+                            completed=bool(row["completed"]),
+                            created_at=row["created_at"],
+                            completed_at=row["completed_at"],
+                            tags=json.loads(row["tags"]) if row["tags"] else []
+                        )
+                        self.todos[todo.id] = todo
+                    
+                    if db_todos:
+                        logging.info(f"Loaded {len(db_todos)} todos from database")
+                        return
+                except Exception as e:
+                    logging.warning(f"Database load failed, trying JSON: {e}")
+            
+            # Fallback to JSON file
             if self.todos_file.exists():
                 async with aiofiles.open(self.todos_file, 'r') as f:
                     data = json.loads(await f.read())
@@ -1171,9 +1921,10 @@ class ProductivityManager(BaseTool):
                             "start_stopwatch", "stop_stopwatch",
                             # Notes
                             "create_note", "get_note", "update_note", "delete_note", 
-                            "list_notes", "search_notes",
+                            "list_notes", "search_notes", "search_notes_fts",
                             # To-Do
                             "add_todo", "complete_todo", "update_todo", "delete_todo", "list_todos",
+                            "search_todos", "search_todos_fts", "get_completed_history",
                             # Windows
                             "open_alarms_app", "show_notification"
                         ],
@@ -1204,9 +1955,10 @@ class ProductivityManager(BaseTool):
                         "description": "Tags for notes/todos"
                     },
                     "pinned": {"type": "boolean", "description": "Pin the note"},
-                    "query": {"type": "string", "description": "Search query for notes"},
+                    "query": {"type": "string", "description": "Search query for notes (FTS supports: AND, OR, NOT, \"phrase\", prefix*)"},
                     "tag": {"type": "string", "description": "Filter by tag"},
                     "pinned_only": {"type": "boolean", "description": "Show only pinned notes"},
+                    "limit": {"type": "integer", "description": "Max results for FTS search", "default": 20},
                     # Todo params
                     "todo_id": {"type": "string", "description": "Todo item ID"},
                     "description": {"type": "string", "description": "Todo description"},
@@ -1218,6 +1970,7 @@ class ProductivityManager(BaseTool):
                     "due_date": {"type": "string", "description": "Due date: 'tomorrow', '2025-12-25'"},
                     "completed": {"type": "boolean", "description": "Mark todo as completed/uncompleted"},
                     "show_completed": {"type": "boolean", "description": "Include completed todos"},
+                    "days": {"type": "integer", "description": "Days of history for get_completed_history", "default": 30},
                     "include_triggered": {"type": "boolean", "description": "Include triggered reminders"}
                 },
                 "required": ["action"]
@@ -1246,5 +1999,12 @@ class ProductivityManager(BaseTool):
         await self._save_timers()
         await self._save_notes()
         await self._save_todos()
+        
+        # Close database connection
+        if self._db_available and self._db:
+            try:
+                await self._db.cleanup()
+            except Exception as e:
+                logging.warning(f"Database cleanup error: {e}")
         
         logging.info("Productivity manager cleanup completed")
