@@ -29,16 +29,15 @@
         "-y",
         "@modelcontextprotocol/server-sequential-thinking"
       ]
+    },
+    "codacy": {
+      "_comment": "Codacy code quality analysis - requires CODACY_ACCOUNT_TOKEN",
+      "type": "stdio",
+      "command": ["npx", "-y", "@codacy/codacy-mcp"],
+      "env": {
+        "CODACY_ACCOUNT_TOKEN": "BScQsyc1PudCHod9ckaA"
+      }
     }
-     },
-     "codacy": {
-       "_comment": "Codacy code quality analysis - requires CODACY_API_TOKEN",
-       "type": "stdio",
-       "command": ["npx", "-y", "@codacy/mcp-server"],
-       "env": {
-         "CODACY_API_TOKEN": "BScQsyc1PudCHod9ckaA"
-       }
-     }
   },
   "_optional_servers": {
     "_comment": "Uncomment and configure these as needed",
