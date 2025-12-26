@@ -55,8 +55,12 @@ class APIKeyManager:
         self.rotation_enabled = True
         self._lock = asyncio.Lock()
         
-    async def load_keys(self):
-        """Load API keys from environment and file"""
+    async def load_keys(self) -> bool:
+        """Load API keys from environment and file.
+        
+        Returns:
+            bool: True if at least one key was loaded, False otherwise
+        """
         async with self._lock:
             self.keys = []
             
@@ -68,16 +72,12 @@ class APIKeyManager:
                 await self._load_from_file()
             
             if not self.keys:
-                logging.warning("No API keys loaded - using single key from GEMINI_API_KEY")
-                single_key = os.getenv("GEMINI_API_KEY")
-                if single_key:
-                    self.keys.append(APIKey(
-                        key=single_key,
-                        name="default",
-                        status=KeyStatus.ACTIVE
-                    ))
+                logging.error("❌ No API keys loaded - GEMINI_API_KEY environment variable not set")
+                logging.error("Get your key at: https://ai.google.dev/")
+                return False
             
-            logging.info(f"Loaded {len(self.keys)} API keys")
+            logging.info(f"✅ Loaded {len(self.keys)} API key(s)")
+            return True
     
     async def _load_from_environment(self):
         """Load keys from environment variables"""

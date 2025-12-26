@@ -42,10 +42,28 @@ PERSONA_GENDERS: Dict[str, str] = {
     "kuudere": "male",
 }
 
-# Get settings from environment
-CURRENT_PERSONALITY = os.getenv("SAKURA_PERSONALITY", "friendly").lower()
-ASSISTANT_NAME = os.getenv("ASSISTANT_NAME", "Sakura")
-CURRENT_VOICE = os.getenv("VOICE_NAME", "Aoede")
+# Module-level defaults (should be overridden at runtime from config)
+CURRENT_PERSONALITY: str = "friendly"  # Set at runtime from config
+ASSISTANT_NAME: str = "Sakura"  # Set at runtime from config
+CURRENT_VOICE: str = "Aoede"  # Set at runtime from config
+
+
+def initialize_from_config(personality: str, assistant_name: str, voice: str) -> None:
+    """Initialize persona settings from loaded configuration.
+    
+    Call this at runtime after config is loaded, NOT at module import time.
+    
+    Args:
+        personality: Personality mode (e.g., "friendly", "flirty")
+        assistant_name: Assistant name for prompts
+        voice: Voice name (e.g., "Aoede", "Charon")
+    """
+    global CURRENT_PERSONALITY, ASSISTANT_NAME, CURRENT_VOICE
+    CURRENT_PERSONALITY = personality.lower()
+    ASSISTANT_NAME = assistant_name
+    CURRENT_VOICE = voice
+    logging.info(f"🎭 Persona initialized: {CURRENT_PERSONALITY} ({CURRENT_VOICE})")
+
 
 def validate_voice_persona_match(voice: str, persona: str) -> Tuple[bool, str]:
     """
@@ -456,10 +474,30 @@ def _get_all_personas(name: str) -> dict:
     personas.update(_get_male_personas(name))
     return personas
 
-# Generate personas and responses with the configured name
-PERSONAS = _get_all_personas(ASSISTANT_NAME)
-WAKE_UP_RESPONSES = _get_wake_responses(ASSISTANT_NAME)
-GOODBYE_RESPONSES = _get_goodbye_responses(ASSISTANT_NAME)
+# Lazy initialization - generated at runtime when config is loaded
+PERSONAS: dict = {}
+WAKE_UP_RESPONSES: dict = {}
+GOODBYE_RESPONSES: dict = {}
+
+def initialize_personas() -> None:
+    """Generate personas and responses using current configuration.
+    
+    Call this after initialize_from_config() to regenerate with updated settings.
+    Populates both the dictionaries and module-level backwards-compatibility variables.
+    """
+    global PERSONAS, WAKE_UP_RESPONSES, GOODBYE_RESPONSES
+    global FLIRTY_GIRLFRIEND_PERSONA, WAKE_UP_RESPONSES_LIST, GOODBYE_RESPONSES_LIST
+    
+    PERSONAS = _get_all_personas(ASSISTANT_NAME)
+    WAKE_UP_RESPONSES = _get_wake_responses(ASSISTANT_NAME)
+    GOODBYE_RESPONSES = _get_goodbye_responses(ASSISTANT_NAME)
+    
+    # Update backwards-compatibility module variables
+    FLIRTY_GIRLFRIEND_PERSONA = get_current_persona()
+    WAKE_UP_RESPONSES_LIST = get_wake_responses()
+    GOODBYE_RESPONSES_LIST = get_goodbye_responses()
+    
+    logging.debug(f"Personas initialized for assistant: {ASSISTANT_NAME}")
 
 def get_current_persona() -> str:
     """Get the current personality persona text"""
@@ -489,7 +527,8 @@ def check_and_warn_mismatch() -> None:
         logging.warning(warning)
         print(f"\n{warning}\n")
 
-# For backwards compatibility
-FLIRTY_GIRLFRIEND_PERSONA = get_current_persona()
-WAKE_UP_RESPONSES_LIST = get_wake_responses()
-GOODBYE_RESPONSES_LIST = get_goodbye_responses()
+# For backwards compatibility - lazy-initialized after runtime config setup
+# These will be populated after initialize_personas() is called in main()
+FLIRTY_GIRLFRIEND_PERSONA = ""  # Will be set by initialize_personas()
+WAKE_UP_RESPONSES_LIST = []  # Will be set by initialize_personas()
+GOODBYE_RESPONSES_LIST = []  # Will be set by initialize_personas()

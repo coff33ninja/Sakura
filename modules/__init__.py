@@ -6,6 +6,7 @@ AI Girlfriend Voice Chat - Modules Package
 from .config import AppConfig, VoiceConfig, WakeWordConfig, GeminiConfig
 from .persona import (
     get_current_persona, get_wake_responses, get_goodbye_responses,
+    initialize_from_config, initialize_personas,
     PersonalityMode, PERSONAS, CURRENT_PERSONALITY,
     # Backwards compatibility
     FLIRTY_GIRLFRIEND_PERSONA, WAKE_UP_RESPONSES_LIST, GOODBYE_RESPONSES_LIST
@@ -38,6 +39,7 @@ __all__ = [
     
     # Persona
     'get_current_persona', 'get_wake_responses', 'get_goodbye_responses',
+    'initialize_from_config', 'initialize_personas',
     'PersonalityMode', 'PERSONAS', 'CURRENT_PERSONALITY',
     'FLIRTY_GIRLFRIEND_PERSONA', 'WAKE_UP_RESPONSES_LIST', 'GOODBYE_RESPONSES_LIST',
     

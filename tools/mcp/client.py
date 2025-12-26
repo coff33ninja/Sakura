@@ -50,36 +50,66 @@ class MCPClient(BaseTool):
             if os.path.exists(config_path):
                 try:
                     with open(config_path, 'r') as f:
-                        self.server_config = json.load(f)
-                    logging.info(f"Loaded MCP config from {config_path}")
+                        content = f.read()
+                        self.server_config = json.loads(content)
+                    
+                    # Validate config structure
+                    if not isinstance(self.server_config, dict):
+                        raise ValueError("MCP config must be a JSON object")
+                    
+                    logging.info(f"✅ Loaded MCP config from {config_path}")
+                except json.JSONDecodeError as e:
+                    logging.error(f"❌ Invalid JSON in MCP config: {e}")
+                    self.server_config = {}
                 except Exception as e:
-                    logging.error(f"Failed to load MCP config: {e}")
+                    logging.error(f"❌ Failed to load MCP config: {e}")
+                    self.server_config = {}
+            else:
+                logging.debug(f"No MCP config found at {config_path} - using defaults")
             
             # Initialize HTTP client for SSE servers
             self.http_client = httpx.AsyncClient(timeout=60.0)
             
             # Connect to configured servers
             servers = self.server_config.get("servers", {})
+            if not isinstance(servers, dict):
+                logging.error(f"❌ MCP 'servers' field must be an object, got {type(servers).__name__}")
+                servers = {}
+            
             for server_name, config in servers.items():
                 if server_name.startswith("_"):
                     continue
                 await self._connect_server(server_name, config)
             
-            logging.info(f"MCP client initialized: {len(self.connected_servers)} servers")
+            logging.info(f"✅ MCP client initialized: {len(self.connected_servers)} server(s)")
         return True
     
     async def _connect_server(self, name: str, config: Dict[str, Any]) -> bool:
-        """Connect to a single MCP server"""
+        """Connect to a single MCP server with validation"""
+        # Validate config structure
+        if not isinstance(config, dict):
+            logging.error(f"❌ MCP server '{name}' config must be an object, got {type(config).__name__}")
+            return False
+        
         server_type = config.get("type", "stdio")
         command = config.get("command", [])
+        
+        # Validate required fields
+        if server_type == "stdio" and not command:
+            logging.error(f"❌ MCP server '{name}' type='stdio' requires 'command' field")
+            return False
+        
+        if server_type == "sse" and not config.get("url"):
+            logging.error(f"❌ MCP server '{name}' type='sse' requires 'url' field")
+            return False
         
         if command:
             cmd = command[0] if isinstance(command, list) else command
             if cmd == "uvx" and not self._has_uvx:
-                logging.warning(f"Skipping {name}: uvx not available")
+                logging.warning(f"⚠️  Skipping {name}: uvx not available (install uv)")
                 return False
             if cmd == "npx" and not self._has_npx:
-                logging.warning(f"Skipping {name}: npx not available")
+                logging.warning(f"⚠️  Skipping {name}: npx not available (install Node.js)")
                 return False
         
         try:
@@ -88,10 +118,10 @@ class MCPClient(BaseTool):
             elif server_type == "sse":
                 return await self._connect_sse(name, config)
             else:
-                logging.warning(f"Unknown MCP server type: {server_type}")
+                logging.error(f"❌ Unknown MCP server type '{server_type}' for {name}")
                 return False
         except Exception as e:
-            logging.error(f"Failed to connect to MCP server {name}: {e}")
+            logging.error(f"❌ Failed to connect to MCP server {name}: {e}")
             return False
     
     async def _connect_stdio(self, name: str, config: Dict[str, Any]) -> bool:

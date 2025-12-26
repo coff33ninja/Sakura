@@ -12,18 +12,18 @@ import signal
 import sys
 from dotenv import load_dotenv
 
-# Load environment variables from .env file
-load_dotenv()
-
 from modules import (
     AppConfig, AsyncConfigLoader, AudioManager, WakeWordDetector, 
     SessionManager, GeminiVoiceClient, get_current_persona, CURRENT_PERSONALITY,
     TaskChain, ErrorRecovery, UserPreferences, SuggestionEngine, IntentParser,
-    BackgroundTaskManager
+    BackgroundTaskManager, initialize_from_config, initialize_personas
 )
 from modules.conversation_context import ConversationContext
 from modules.persona import get_wake_responses
 from tools import create_tool_registry, ToolRegistry
+
+# Load environment variables from .env file
+load_dotenv()
 
 class AIGirlfriend:
     """Main application class for AI Girlfriend voice chat"""
@@ -999,6 +999,16 @@ async def main():
     config_loader = AsyncConfigLoader()
     config = await config_loader.load_config()
     
+    # Initialize personas from loaded configuration at runtime
+    # This replaces import-time initialization with runtime-aware settings
+    initialize_from_config(
+        personality=config.gemini.personality,
+        assistant_name=config.gemini.assistant_name,
+        voice=config.voice.voice_name
+    )
+    initialize_personas()
+    logging.info(f"🎭 Runtime configuration initialized for {config.gemini.assistant_name}")
+    
     # Validate required API keys
     if not config.gemini.api_key and not os.getenv("GEMINI_API_KEY_1"):
         print("❌ At least one GEMINI_API_KEY environment variable is required!")
@@ -1014,6 +1024,13 @@ async def main():
     girlfriend = AIGirlfriend(config)
     
     if await girlfriend.initialize():
+        # Check if API keys were successfully loaded
+        # APIKeyManager.load_keys() now returns bool indicating success
+        if not await girlfriend.key_manager.load_keys():
+            print("❌ Failed to load any API keys!")
+            print("Unable to start application without valid API keys.")
+            return
+        
         # Setup for graceful shutdown
         loop = asyncio.get_event_loop()
         

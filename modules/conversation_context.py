@@ -10,6 +10,7 @@ Rules followed:
 """
 import asyncio
 import logging
+import os
 from typing import Dict, Any, List, Optional
 from dataclasses import dataclass, field, asdict
 from datetime import datetime
@@ -39,10 +40,11 @@ class ConversationExchange:
 class ConversationContext:
     """Manages conversation context with rolling buffer and database persistence"""
     
-    def __init__(self, max_exchanges: int = 20, context_file: str = "conversation_context.json", db_path: str = "sakura.db"):
+    def __init__(self, max_exchanges: int = 20, context_file: str = None, db_path: str = None):
         self.max_exchanges = max_exchanges
-        self.context_file = context_file
-        self.db_path = db_path
+        # Allow environment variable overrides
+        self.context_file = context_file or os.getenv("CONVERSATION_CONTEXT_FILE", "conversation_context.json")
+        self.db_path = db_path or os.getenv("DB_PATH", "sakura.db")
         self._lock = asyncio.Lock()
         self._exchanges: List[ConversationExchange] = []
         self._session_start: str = datetime.now().isoformat()

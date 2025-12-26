@@ -466,6 +466,94 @@ pygame>=2.5.0
 
 ## 🎉 Version History
 
+### v1.2.1 - Tool System Improvements (2025-12-26)
+
+Major improvements to Sakura's tool system architecture, reliability, and observability.
+
+#### 🔐 Windows Privilege Checking
+Added automatic privilege validation for sensitive Windows operations:
+- **Protected Actions**: `kill_process`, `execute_script`, `power_action`, `virtual_desktop`, `lock_screen`
+- **Admin Verification**: Uses `ctypes.windll.shell32.IsUserAnAdmin()` to check privileges before execution
+- **Clear Error Messages**: "Action requires Administrator privileges. Run Sakura as Administrator."
+- **Graceful Degradation**: Warns if privilege check fails, prevents dangerous operations
+
+#### 📊 Tool Performance Metrics
+New `ToolMetrics` system tracks execution performance and reliability:
+- **Per-Tool Tracking**: Execution count, success count, error count, total duration
+- **Performance Analytics**: Average duration per execution, success rate percentage
+- **Slow Operation Logging**: Warns when tools exceed 2-second execution time with metrics
+- **Registry Integration**: `ToolRegistry.get_metrics(tool_name)` for real-time metrics access
+- **Crash Tracking**: Records exceptions and tool failures for debugging
+
+#### 🔑 Tool Dependency Validation
+New `ToolDependency` framework for managing external dependencies:
+- **Optional Dependencies**: Tools gracefully degrade if optional packages unavailable
+- **Required Dependencies**: Blocks tool execution if required packages missing
+- **Dependency Checking**: `BaseTool.check_dependencies()` verifies all imports
+- **Clear Installation Instructions**: Shows `pip install` commands for missing packages
+- **Logging**: Warnings for optional features, errors for required ones
+
+#### ⚡ WebSearch Rate Limiting
+Protection against IP blocking from DuckDuckGo:
+- **1-Second Minimum Interval**: Enforces minimum delay between requests
+- **Timestamp Tracking**: Tracks last request time per WebSearch instance
+- **Smart Sleeping**: Only sleeps if previous request too recent
+- **Prevents Hammering**: Stops request floods from blocking Sakura's IP
+
+#### 💾 SmartHome Device Cache TTL
+Intelligent caching to prevent stale device lists:
+- **5-Minute TTL**: Device cache refreshes every 300 seconds
+- **Force Refresh**: Optional `force=True` to bypass cache
+- **Smart Refresh**: Only fetches from Home Assistant if cache expired
+- **Persistent State**: Maintains device state between quick refresh cycles
+- **Configurable**: Easy to adjust TTL for different environments
+
+#### ✅ ConnectionProfile Validation
+Runtime validation for SSH/SMB/FTP/RDP connections:
+- **Required Fields**: ID and name must be non-empty strings
+- **Port Validation**: Checks port range 0-65535
+- **Profile Type Check**: Validates against supported types (ssh, sftp, smb, ftp, ftps, rdp)
+- **Auth Type Validation**: Supports password, key, ntlm, kerberos
+- **Key Path Requirement**: Enforces `key_path` when using key-based authentication
+- **Descriptive Errors**: Clear messages for each validation failure
+
+#### 📚 Speaker Authentication Documentation
+Enhanced docstring with comprehensive integration examples:
+- **Mode Descriptions**: DISABLED, OPTIONAL, STRICT, TRAINING modes explained
+- **Complete Example Code**: Shows full train + authenticate workflow
+- **Features Overview**: Voice profiles, real-time auth, confidence scoring, persistence
+- **Integration Pattern**: How to use in Sakura's main conversation flow
+- **Ownership Model**: Each authentication tied to specific speaker
+
+#### 🏷️ Action Enums for All Tools
+Added `*Actions` enums to 6 major tools for IDE autocomplete and type safety:
+- **system_info**: 16 actions (get_pc_info, list_apps, explore_folder, etc.)
+- **windows**: 45+ actions (run_command, open_app, kill_process, screenshot, etc.)
+- **developer**: 45+ actions (git_status, python_execute, npm_install, ssh_connect, etc.)
+- **productivity**: 27+ actions (create_reminder, start_timer, create_note, add_todo, etc.)
+- **discord**: 8 actions (send_message, change_channel, join_voice, etc.)
+- **memory**: 18+ actions (store_info, search_fts, log_feedback, get_corrections, etc.)
+- **Benefits**: Type hints in IDE, prevents typos, self-documenting code
+
+#### 📈 Total Tool Actions: 211
+All improvements maintain backward compatibility. No breaking changes to tool interfaces.
+
+| Tool | Actions | Improvements |
+|------|---------|--------------|
+| `windows` | 46 | Privilege checking for sensitive operations |
+| `system_info` | 16 | Action enum added |
+| `memory` | 24 | Action enum added, performance tracking |
+| `web_search` | 1 | Rate limiting protection |
+| `web_fetch` | 1 | Dependency validation framework |
+| `discord` | 8 | Action enum added |
+| `smart_home` | 21 | Device cache TTL, dependency validation |
+| `mcp_client` | 3 | Dependency validation framework |
+| `productivity` | 27 | Action enum added |
+| `developer` | 47 | Action enum added, connection validation |
+| `meta` | 20 | Performance metrics access |
+
+---
+
 ### v1.2.0 - Database Integration (2025-12-26)
 
 Unified database storage for AI modules - error recovery and user preferences now use SQLite.

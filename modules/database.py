@@ -10,6 +10,7 @@ Rules followed:
 import asyncio
 import logging
 import json
+import os
 from typing import Dict, Any, Optional, List, Tuple, Union
 from datetime import datetime
 from pathlib import Path
@@ -25,7 +26,11 @@ except ImportError:
 class DatabaseManager:
     """Async SQLite database manager for Sakura's memory system"""
     
-    def __init__(self, db_path: Union[str, Path] = "sakura.db"):
+    def __init__(self, db_path: Union[str, Path] = None):
+        # Allow environment variable override, fallback to parameter, then default
+        if db_path is None:
+            db_path = os.getenv("DB_PATH", "sakura.db")
+        
         self.db_path = Path(db_path) if isinstance(db_path, str) else db_path
         self._lock = asyncio.Lock()
         self._connection: Optional['aiosqlite.Connection'] = None
