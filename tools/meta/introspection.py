@@ -110,8 +110,13 @@ class MetaTools(BaseTool):
             "search_capabilities": self._search_capabilities,
             "analyze_request": self._analyze_request,
             "get_capability_summary": self._get_capability_summary,
-            # Dynamic tool execution
+            # Dynamic execution
             "execute_tool": self._execute_tool,
+            "execute_chain": self._execute_chain,
+            # Research & Discovery
+            "research_solution": self._research_solution,
+            "check_mcp_servers": self._check_mcp_servers,
+            "call_mcp_tool": self._call_mcp_tool,
             # Script generation
             "generate_script": self._generate_script,
             "save_script": self._save_script,
@@ -553,6 +558,261 @@ class MetaTools(BaseTool):
             
         except Exception as e:
             logging.error(f"Dynamic tool execution failed: {e}")
+            return ToolResult(status=ToolStatus.ERROR, error=str(e))
+    
+    async def _execute_chain(self, steps: List[Dict[str, Any]], stop_on_error: bool = True, **kwargs) -> ToolResult:
+        """Execute a chain of tool calls in sequence
+        
+        Args:
+            steps: List of steps, each with {tool_name, tool_action, tool_args}
+            stop_on_error: Stop execution if a step fails
+            
+        Example:
+            steps=[
+                {"tool_name": "web_search", "tool_action": "search", "tool_args": {"query": "python spotify api"}},
+                {"tool_name": "developer", "tool_action": "run_python", "tool_args": {"code": "print('hello')"}}
+            ]
+        """
+        try:
+            results = []
+            previous_result = None
+            
+            for i, step in enumerate(steps):
+                tool_name = step.get("tool_name")
+                tool_action = step.get("tool_action")
+                tool_args = step.get("tool_args", {})
+                
+                if not tool_name or not tool_action:
+                    results.append({
+                        "step": i + 1,
+                        "status": "error",
+                        "error": "Missing tool_name or tool_action"
+                    })
+                    if stop_on_error:
+                        break
+                    continue
+                
+                # Allow referencing previous result with $PREV
+                if tool_args and previous_result:
+                    for key, value in tool_args.items():
+                        if value == "$PREV":
+                            tool_args[key] = previous_result
+                        elif isinstance(value, str) and "$PREV." in value:
+                            # Handle $PREV.field references
+                            field = value.replace("$PREV.", "")
+                            if isinstance(previous_result, dict):
+                                tool_args[key] = previous_result.get(field, value)
+                
+                # Execute the step
+                result = await self._execute_tool(
+                    tool_name=tool_name,
+                    tool_action=tool_action,
+                    tool_args=tool_args
+                )
+                
+                step_result = {
+                    "step": i + 1,
+                    "tool": f"{tool_name}.{tool_action}",
+                    "status": result.status.value,
+                    "data": result.data,
+                    "message": result.message
+                }
+                
+                if result.status == ToolStatus.ERROR:
+                    step_result["error"] = result.error
+                    results.append(step_result)
+                    if stop_on_error:
+                        break
+                else:
+                    results.append(step_result)
+                    previous_result = result.data
+            
+            successful = sum(1 for r in results if r["status"] == "success")
+            
+            return ToolResult(
+                status=ToolStatus.SUCCESS if successful == len(steps) else ToolStatus.ERROR,
+                data={"steps": results, "successful": successful, "total": len(steps)},
+                message=f"⛓️ Chain: {successful}/{len(steps)} steps completed"
+            )
+            
+        except Exception as e:
+            return ToolResult(status=ToolStatus.ERROR, error=str(e))
+    
+    # ==================== RESEARCH & DISCOVERY ====================
+    
+    async def _research_solution(self, query: str, search_web: bool = True, 
+                                  check_mcp: bool = True, **kwargs) -> ToolResult:
+        """Research how to accomplish something using web search and MCP servers
+        
+        Args:
+            query: What you're trying to accomplish (e.g., "control spotify playback")
+            search_web: Search the web for solutions
+            check_mcp: Check if any MCP servers can help
+        """
+        try:
+            research_results = {
+                "query": query,
+                "builtin_capabilities": [],
+                "mcp_capabilities": [],
+                "web_results": [],
+                "extension_scripts": [],
+                "recommendation": ""
+            }
+            
+            # 1. Check built-in capabilities first
+            analysis = await self._analyze_request(query)
+            if analysis.data:
+                research_results["builtin_capabilities"] = {
+                    "can_handle": analysis.data.get("can_handle", False),
+                    "tools": analysis.data.get("potential_tools", []),
+                    "actions": analysis.data.get("relevant_actions", [])
+                }
+            
+            # 2. Check extension scripts
+            similar = await self._find_similar_scripts(query)
+            if similar.data:
+                research_results["extension_scripts"] = similar.data
+            
+            # 3. Check MCP servers
+            if check_mcp:
+                mcp_result = await self._check_mcp_servers(query)
+                if mcp_result.data:
+                    research_results["mcp_capabilities"] = mcp_result.data
+            
+            # 4. Search the web for solutions
+            if search_web:
+                web_tool = self._tool_registry.get("web_search") if self._tool_registry else None
+                if web_tool:
+                    try:
+                        search_query = f"python windows automation {query}"
+                        web_result = await web_tool.execute(action="search", query=search_query)
+                        if web_result.status == ToolStatus.SUCCESS and web_result.data:
+                            research_results["web_results"] = web_result.data[:5] if isinstance(web_result.data, list) else [web_result.data]
+                    except Exception as e:
+                        logging.warning(f"Web search failed: {e}")
+            
+            # 5. Generate recommendation
+            if research_results["builtin_capabilities"].get("can_handle"):
+                research_results["recommendation"] = "USE_BUILTIN"
+                research_results["recommendation_detail"] = f"Use existing tools: {research_results['builtin_capabilities']['actions'][:3]}"
+            elif research_results["extension_scripts"]:
+                research_results["recommendation"] = "USE_EXTENSION"
+                research_results["recommendation_detail"] = f"Use existing extension script: {research_results['extension_scripts'][0]['name']}"
+            elif research_results["mcp_capabilities"]:
+                research_results["recommendation"] = "USE_MCP"
+                research_results["recommendation_detail"] = "Use MCP server capabilities"
+            elif research_results["web_results"]:
+                research_results["recommendation"] = "CREATE_EXTENSION"
+                research_results["recommendation_detail"] = "Create new extension script based on web research"
+            else:
+                research_results["recommendation"] = "MANUAL"
+                research_results["recommendation_detail"] = "No automated solution found - may require manual implementation"
+            
+            return ToolResult(
+                status=ToolStatus.SUCCESS,
+                data=research_results,
+                message=f"🔬 Research complete: {research_results['recommendation']}"
+            )
+            
+        except Exception as e:
+            return ToolResult(status=ToolStatus.ERROR, error=str(e))
+    
+    async def _check_mcp_servers(self, query: str = "", **kwargs) -> ToolResult:
+        """Check available MCP servers and their capabilities
+        
+        Args:
+            query: Optional query to filter relevant MCP tools
+        """
+        try:
+            mcp_client = self._tool_registry.get("mcp_client") if self._tool_registry else None
+            
+            if not mcp_client:
+                return ToolResult(
+                    status=ToolStatus.SUCCESS,
+                    data={"available": False, "servers": [], "message": "MCP client not available"},
+                    message="ℹ️ MCP client not registered"
+                )
+            
+            # Get list of MCP servers and their tools
+            try:
+                list_result = await mcp_client.execute(action="list_servers")
+                servers = list_result.data if list_result.status == ToolStatus.SUCCESS else []
+            except Exception:
+                servers = []
+            
+            # Get tools from each server
+            mcp_tools = []
+            for server in servers if isinstance(servers, list) else []:
+                try:
+                    tools_result = await mcp_client.execute(action="list_tools", server=server.get("name", server))
+                    if tools_result.status == ToolStatus.SUCCESS and tools_result.data:
+                        for tool in tools_result.data:
+                            tool_info = {
+                                "server": server.get("name", server) if isinstance(server, dict) else server,
+                                "tool": tool.get("name", tool) if isinstance(tool, dict) else tool,
+                                "description": tool.get("description", "") if isinstance(tool, dict) else ""
+                            }
+                            # Filter by query if provided
+                            if query:
+                                query_lower = query.lower()
+                                if (query_lower in tool_info["tool"].lower() or 
+                                    query_lower in tool_info["description"].lower()):
+                                    mcp_tools.append(tool_info)
+                            else:
+                                mcp_tools.append(tool_info)
+                except Exception as e:
+                    logging.warning(f"Failed to get tools from MCP server: {e}")
+            
+            return ToolResult(
+                status=ToolStatus.SUCCESS,
+                data={
+                    "available": True,
+                    "servers": servers,
+                    "tools": mcp_tools,
+                    "total_tools": len(mcp_tools)
+                },
+                message=f"🔌 Found {len(mcp_tools)} MCP tools" + (f" matching '{query}'" if query else "")
+            )
+            
+        except Exception as e:
+            return ToolResult(status=ToolStatus.ERROR, error=str(e))
+    
+    async def _call_mcp_tool(self, server: str, tool: str, arguments: Dict[str, Any] = None, **kwargs) -> ToolResult:
+        """Call a specific MCP server tool
+        
+        Args:
+            server: MCP server name
+            tool: Tool name on the server
+            arguments: Arguments to pass to the tool
+        """
+        try:
+            mcp_client = self._tool_registry.get("mcp_client") if self._tool_registry else None
+            
+            if not mcp_client:
+                return ToolResult(
+                    status=ToolStatus.ERROR,
+                    error="MCP client not available"
+                )
+            
+            result = await mcp_client.execute(
+                action="call_tool",
+                server=server,
+                tool=tool,
+                arguments=arguments or {}
+            )
+            
+            return ToolResult(
+                status=result.status,
+                data={
+                    "server": server,
+                    "tool": tool,
+                    "result": result.data
+                },
+                message=f"🔌 MCP {server}.{tool}: {result.message}" if result.message else f"🔌 Called {server}.{tool}",
+                error=result.error
+            )
+            
+        except Exception as e:
             return ToolResult(status=ToolStatus.ERROR, error=str(e))
 
     
@@ -1564,7 +1824,9 @@ endlocal
                             "list_all_tools", "get_tool_details", "search_capabilities",
                             "analyze_request", "get_capability_summary",
                             # Dynamic execution
-                            "execute_tool",
+                            "execute_tool", "execute_chain",
+                            # Research & Discovery
+                            "research_solution", "check_mcp_servers", "call_mcp_tool",
                             # Script generation
                             "generate_script", "save_script", "list_scripts",
                             "get_script", "delete_script", "verify_script",
@@ -1578,14 +1840,35 @@ endlocal
                     # Introspection params
                     "category": {"type": "string", "description": "Tool category to filter by"},
                     "tool_name": {"type": "string", "description": "Name of tool to execute or get details for"},
-                    "query": {"type": "string", "description": "Search query for capabilities"},
+                    "query": {"type": "string", "description": "Search query for capabilities or research"},
                     "user_request": {"type": "string", "description": "User's natural language request to analyze"},
                     # Dynamic execution params
-                    "tool_action": {"type": "string", "description": "The action to execute on the tool (for execute_tool)"},
+                    "tool_action": {"type": "string", "description": "The action to execute on the tool"},
                     "tool_args": {
                         "type": "object",
-                        "description": "Arguments to pass to the tool action (for execute_tool)"
+                        "description": "Arguments to pass to the tool action"
                     },
+                    # Chain execution params
+                    "steps": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "tool_name": {"type": "string"},
+                                "tool_action": {"type": "string"},
+                                "tool_args": {"type": "object"}
+                            }
+                        },
+                        "description": "List of steps for execute_chain, each with tool_name, tool_action, tool_args"
+                    },
+                    "stop_on_error": {"type": "boolean", "description": "Stop chain execution on error", "default": True},
+                    # Research params
+                    "search_web": {"type": "boolean", "description": "Search web for solutions", "default": True},
+                    "check_mcp": {"type": "boolean", "description": "Check MCP servers for capabilities", "default": True},
+                    # MCP params
+                    "server": {"type": "string", "description": "MCP server name"},
+                    "tool": {"type": "string", "description": "MCP tool name"},
+                    "arguments": {"type": "object", "description": "Arguments for MCP tool call"},
                     # Script params
                     "script_id": {"type": "string", "description": "ID of extension script"},
                     "name": {"type": "string", "description": "Script name"},

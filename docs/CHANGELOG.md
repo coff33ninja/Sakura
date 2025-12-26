@@ -9,11 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### 🧠 Meta Tools - Self-Awareness & Capability Extension
 
-Sakura can now understand its own capabilities and extend itself with custom scripts.
+Sakura can now understand its own capabilities, research solutions, and extend itself.
 
 #### Added
 
-**Meta Tools - 16 New Actions**
+**Meta Tools - 20 New Actions**
 
 *Introspection*
 - `list_all_tools` - List all available tools and their actions
@@ -24,6 +24,12 @@ Sakura can now understand its own capabilities and extend itself with custom scr
 
 *Dynamic Tool Execution*
 - `execute_tool` - Execute any tool dynamically after introspection
+- `execute_chain` - Chain multiple tools with result passing ($PREV references)
+
+*Research & Discovery*
+- `research_solution` - Search ALL sources (built-in, MCP, web, extension scripts)
+- `check_mcp_servers` - List available MCP servers and their tools
+- `call_mcp_tool` - Call any MCP server tool directly
 
 *Script Generation*
 - `generate_script` - Create extension scripts (Python, PowerShell, Batch, JS)
@@ -49,7 +55,7 @@ Sakura can now understand its own capabilities and extend itself with custom scr
 #### Changed
 - `tools/__init__.py` - Registered MetaTools with registry reference
 - `modules/database.py` - Added extension_scripts table + indexes
-- Total tool actions: 207 (up from 191)
+- Total tool actions: 211 (up from 191)
 - New tool category: Meta (11th category)
 
 #### Technical
@@ -57,6 +63,7 @@ Sakura can now understand its own capabilities and extend itself with custom scr
 - Auto-generated headers with metadata
 - JSON backup of script index
 - Syntax validation before execution
+- Chain execution supports $PREV and $PREV.field references
 
 ---
 
