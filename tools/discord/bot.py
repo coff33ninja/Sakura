@@ -39,6 +39,7 @@ class DiscordBot(BaseTool):
         self.voice_client: Optional[Any] = None
         self.voice_enabled = DISCORD_PY_AVAILABLE
         self._bot_task: Optional[asyncio.Task] = None
+        self._playback_task: Optional[asyncio.Task] = None
         self._audio_callback: Optional[Callable] = None
         self._voice_queue: asyncio.Queue = asyncio.Queue()
 

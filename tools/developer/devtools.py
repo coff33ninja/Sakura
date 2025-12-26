@@ -1363,14 +1363,14 @@ class DeveloperTools(BaseTool):
                            "use_ssl", "passive_mode", "extra_config"]
             
             update_data = {}
-            for field in update_fields:
-                if field in kwargs and kwargs[field] is not None:
-                    if field == "extra_config":
-                        update_data[field] = json.dumps(kwargs[field])
-                    elif field in ["use_ssl", "passive_mode"]:
-                        update_data[field] = 1 if kwargs[field] else 0
+            for field_name in update_fields:
+                if field_name in kwargs and kwargs[field_name] is not None:
+                    if field_name == "extra_config":
+                        update_data[field_name] = json.dumps(kwargs[field_name])
+                    elif field_name in ["use_ssl", "passive_mode"]:
+                        update_data[field_name] = 1 if kwargs[field_name] else 0
                     else:
-                        update_data[field] = kwargs[field]
+                        update_data[field_name] = kwargs[field_name]
             
             if not update_data:
                 return ToolResult(status=ToolStatus.ERROR, error="No fields to update")

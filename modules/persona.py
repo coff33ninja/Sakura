@@ -1,7 +1,6 @@
 """
 Persona definitions - Configurable personality modes with gender support
 """
-import os
 import logging
 from enum import Enum
 from typing import Dict, List, Tuple
@@ -355,9 +354,9 @@ def _get_wake_responses(name: str) -> dict:
         # Female responses
         "flirty": [
             f"Mmm, yes baby? {name}'s been waiting for you... 😈",
-            f"Oh handsome, you called? I'm all yours right now... 💋",
+            "Oh handsome, you called? I'm all yours right now... 💋",
             f"Hey there, sexy... what do you need from your {name}? 🔥",
-            f"Baby! I was just thinking about you... tell me everything 💦",
+            "Baby! I was just thinking about you... tell me everything 💦",
             f"You called for {name}? Come here and talk to me... 😏"
         ],
         "friendly": [
@@ -384,10 +383,10 @@ def _get_wake_responses(name: str) -> dict:
         # Male responses
         "flirty_m": [
             f"Hey beautiful... {name}'s been thinking about you 😏",
-            f"You called? Come here, gorgeous... 🔥",
-            f"Mmm, there's my favorite person... what do you need, baby?",
+            "You called? Come here, gorgeous... 🔥",
+            "Mmm, there's my favorite person... what do you need, baby?",
             f"Hey there, princess... {name}'s all yours 😈",
-            f"I was hoping you'd call... what's on your mind, beautiful?"
+            "I was hoping you'd call... what's on your mind, beautiful?"
         ],
         "friendly_m": [
             f"Hey! {name} here, what's going on?",

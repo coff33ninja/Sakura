@@ -883,9 +883,6 @@ class ProductivityManager(BaseTool):
                         continue
                     seen_ids.add(source_id)
                     
-                    # Find the note by searching content match
-                    content_preview = fts_row.get("content", "")[:100]
-                    
                     # Search for matching note in database
                     db_notes = await self._db.execute_raw(
                         """SELECT note_id, title, content, tags, pinned, updated_at

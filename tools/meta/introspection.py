@@ -1778,7 +1778,7 @@ endlocal
             # Check if exists
             existing = await self._db.select(
                 "extension_scripts", "script_id",
-                where="script_id = ?", params=[script.id]
+                where="script_id = ?", where_params=(script.id,)
             )
             
             data = {
@@ -1801,7 +1801,7 @@ endlocal
             if existing:
                 await self._db.update(
                     "extension_scripts", data,
-                    where="script_id = ?", params=[script.id]
+                    where="script_id = ?", where_params=(script.id,)
                 )
             else:
                 await self._db.insert("extension_scripts", data)
