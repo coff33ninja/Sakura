@@ -145,6 +145,10 @@ class WakeWordDetector:
                 keyword_index = self.porcupine.process(frame)
                 
                 if keyword_index >= 0:
+                    # If we are already listening, do not send another wake response for this current listening session
+                    if self.is_listening:
+                        return None
+                    
                     detected_keyword = self.keywords[keyword_index]
                     self.is_listening = True
                     wake_responses = get_wake_responses()
