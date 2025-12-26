@@ -476,6 +476,8 @@ COMMON MCP SERVERS (run with windows run_command "uvx <server>"):
     
     async def _process_audio(self):
         """Process audio input and send to Gemini"""
+        # Initialize wake_greeting_prob once at the beginning of the method
+        wake_greeting_prob = float(os.getenv('WAKE_GREETING_PROBABILITY', '0.7'))
         while self.running:
             try:
                 # Read audio chunk in thread to not block
@@ -494,7 +496,6 @@ COMMON MCP SERVERS (run with windows run_command "uvx <server>"):
                         logging.info("Wake word detected - now listening")
                         
                         # Randomly make Sakura speak a greeting (configurable probability for human-like feel)
-                        wake_greeting_prob = float(os.getenv('WAKE_GREETING_PROBABILITY', '0.7'))
                     if secrets.randbelow(100) / 100.0 < wake_greeting_prob:
                             try:
                                 # Get a random wake response based on personality
