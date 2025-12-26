@@ -5,7 +5,8 @@ Intelligent error handling with retry strategies and user feedback
 Rules followed:
 - All imports MUST be used
 - Async with asyncio.Lock() for thread safety
-- aiofiles for file I/O
+- aiofiles for file I/O (fallback)
+- Database integration for error patterns
 """
 import asyncio
 import logging
@@ -17,6 +18,13 @@ from datetime import datetime, timedelta
 from enum import Enum
 import json
 import aiofiles
+
+# Import database module
+try:
+    from modules.database import get_database, HAS_AIOSQLITE
+except ImportError:
+    HAS_AIOSQLITE = False
+    get_database = None
 
 
 class ErrorCategory(Enum):
@@ -51,6 +59,7 @@ class RecoveryResult:
     total_time_ms: float = 0
     suggestion: Optional[str] = None
     alternatives: List[str] = field(default_factory=list)
+    known_solution: Optional[str] = None  # Solution from database
 
 
 @dataclass
@@ -113,25 +122,82 @@ class ErrorRecovery:
         ErrorCategory.UNKNOWN: RetryConfig(max_retries=1, base_delay_ms=2000)
     }
 
-    def __init__(self, error_log_file: str = "error_recovery_log.json"):
+    def __init__(self, error_log_file: str = "error_recovery_log.json", db_path: str = "sakura.db"):
         self.error_log_file = error_log_file
+        self.db_path = db_path
         self._lock = asyncio.Lock()
         self._error_history: List[ErrorRecord] = []
         self._retry_configs: Dict[ErrorCategory, RetryConfig] = self.DEFAULT_RETRY_CONFIGS.copy()
         self._alternative_handlers: Dict[str, Callable] = {}
-        self._cooldown_until: Dict[str, datetime] = {}  # Tool cooldowns after repeated failures
-        self._error_cooldown = timedelta(minutes=5)  # Cooldown period for repeated errors
+        self._cooldown_until: Dict[str, datetime] = {}
+        self._error_cooldown = timedelta(minutes=5)
+        self._db = None
+        self._use_db = HAS_AIOSQLITE and get_database is not None
     
     async def initialize(self) -> bool:
-        """Initialize error recovery, load history"""
+        """Initialize error recovery, connect to database"""
         async with self._lock:
             try:
+                # Try to connect to database
+                if self._use_db and get_database:
+                    try:
+                        self._db = await get_database(self.db_path)
+                        logging.info("Error recovery connected to database")
+                        
+                        # Migrate JSON data to database if exists
+                        await self._migrate_json_to_db()
+                    except Exception as e:
+                        logging.warning(f"Database connection failed, using JSON fallback: {e}")
+                        self._db = None
+                        self._use_db = False
+                
+                # Load from JSON as fallback or for in-memory cache
                 await self._load_error_history()
+                
                 logging.info(f"Error recovery initialized with {len(self._error_history)} historical errors")
                 return True
             except Exception as e:
-                logging.warning(f"Could not load error history: {e}")
-                return True  # Still return True, start fresh
+                logging.warning(f"Could not initialize error recovery: {e}")
+                return True
+    
+    async def _migrate_json_to_db(self):
+        """Migrate existing JSON error history to database"""
+        if not self._db:
+            return
+        
+        try:
+            async with aiofiles.open(self.error_log_file, 'r') as f:
+                content = await f.read()
+                data = json.loads(content)
+            
+            migrated = 0
+            for error_data in data.get("errors", []):
+                # Check if already in database
+                existing = await self._db.select_one(
+                    "error_patterns",
+                    "*",
+                    "tool_name = ? AND action_name = ? AND error_message LIKE ?",
+                    (error_data["tool_name"], error_data["action"], f"%{error_data['error_message'][:100]}%")
+                )
+                
+                if not existing:
+                    await self._db.log_error_pattern(
+                        tool_name=error_data["tool_name"],
+                        action_name=error_data["action"],
+                        error_type=error_data["category"],
+                        error_message=error_data["error_message"],
+                        context={"recovery_attempted": error_data.get("recovery_attempted", False)},
+                        solution=error_data.get("user_resolution")
+                    )
+                    migrated += 1
+            
+            if migrated > 0:
+                logging.info(f"Migrated {migrated} error patterns from JSON to database")
+                
+        except FileNotFoundError:
+            pass
+        except Exception as e:
+            logging.debug(f"JSON migration skipped: {e}")
     
     def categorize_error(self, error_message: str) -> ErrorCategory:
         """Categorize an error based on its message"""
@@ -154,7 +220,6 @@ class ErrorRecovery:
                     logging.info(f"{key} is on cooldown for {remaining.seconds}s more")
                     return True
                 else:
-                    # Cooldown expired, remove it
                     del self._cooldown_until[key]
             return False
     
@@ -168,10 +233,38 @@ class ErrorRecovery:
     
     async def get_recent_errors(self, tool_name: str, within: timedelta = None) -> List[ErrorRecord]:
         """Get recent errors for a tool within a time window"""
+        window = within or timedelta(hours=1)
+        cutoff = datetime.now() - window
+        
+        # Try database first
+        if self._db:
+            try:
+                db_errors = await self._db.select(
+                    "error_patterns",
+                    "*",
+                    "tool_name = ? AND last_occurred > ?",
+                    (tool_name, cutoff.isoformat()),
+                    order_by="last_occurred DESC",
+                    limit=20
+                )
+                
+                records = []
+                for err in db_errors:
+                    records.append(ErrorRecord(
+                        timestamp=err.get("last_occurred", ""),
+                        tool_name=err.get("tool_name", ""),
+                        action=err.get("action_name", ""),
+                        error_message=err.get("error_message", ""),
+                        category=ErrorCategory(err.get("error_type", "unknown")),
+                        recovery_attempted=True,
+                        recovery_success=err.get("solution") is not None
+                    ))
+                return records
+            except Exception as e:
+                logging.debug(f"Database query failed, using memory: {e}")
+        
+        # Fallback to in-memory
         async with self._lock:
-            window = within or timedelta(hours=1)
-            cutoff = datetime.now() - window
-            
             recent = []
             for record in self._error_history:
                 try:
@@ -180,16 +273,28 @@ class ErrorRecovery:
                         recent.append(record)
                 except (ValueError, TypeError):
                     continue
-            
             return recent
+    
+    async def get_known_solution(self, tool_name: str, action: str, error_type: str = None) -> Optional[str]:
+        """Get a known solution from database for this error type"""
+        if not self._db:
+            return None
+        
+        try:
+            solutions = await self._db.get_error_solutions(tool_name, action, error_type)
+            if solutions:
+                # Return the most recent solution
+                return solutions[0].get("solution")
+        except Exception as e:
+            logging.debug(f"Error getting solutions: {e}")
+        
+        return None
     
     async def should_skip_retry(self, tool_name: str, action: str) -> Tuple[bool, Optional[str]]:
         """Check if we should skip retrying based on recent failure patterns"""
-        # Check cooldown first
         if await self.is_on_cooldown(tool_name, action):
             return True, "Tool is on cooldown due to repeated failures"
         
-        # Check for repeated recent failures (3+ in last 10 minutes)
         recent = await self.get_recent_errors(tool_name, timedelta(minutes=10))
         action_failures = [r for r in recent if r.action == action and not r.recovery_success]
         
@@ -198,7 +303,7 @@ class ErrorRecovery:
             return True, f"Too many recent failures ({len(action_failures)} in 10 min), cooling down"
         
         return False, None
-    
+
     async def attempt_recovery(
         self,
         tool_name: str,
@@ -240,6 +345,11 @@ class ErrorRecovery:
         
         logging.info(f"Error categorized as {category.value}: {error_message[:100]}")
         
+        # Check for known solution in database FIRST
+        known_solution = await self.get_known_solution(tool_name, action, category.value)
+        if known_solution:
+            logging.info(f"Found known solution: {known_solution[:100]}")
+        
         # Get retry config for this category
         config = self._retry_configs.get(category, RetryConfig(max_retries=0))
         
@@ -261,39 +371,49 @@ class ErrorRecovery:
             tags=error_tags
         )
         
+        # Log to database
+        await self._log_error_to_db(tool_name, action, category.value, error_message, args)
+        
         # Handle based on category
         if category == ErrorCategory.PERMANENT:
+            await self._record_error(error_record)
             return RecoveryResult(
                 success=False,
                 action_taken="gave_up",
                 error=error_message,
-                suggestion=self._get_permanent_error_suggestion(tool_name, action, error_message)
+                suggestion=self._get_permanent_error_suggestion(tool_name, action, error_message),
+                known_solution=known_solution
             )
         
         if category == ErrorCategory.PERMISSION:
+            await self._record_error(error_record)
             return RecoveryResult(
                 success=False,
                 action_taken="needs_permission",
                 error=error_message,
-                suggestion=self._get_permission_suggestion(tool_name, action)
+                suggestion=self._get_permission_suggestion(tool_name, action),
+                known_solution=known_solution
             )
         
         if category == ErrorCategory.INVALID_INPUT:
+            await self._record_error(error_record)
             return RecoveryResult(
                 success=False,
                 action_taken="needs_clarification",
                 error=error_message,
-                suggestion=self._get_input_suggestion(tool_name, action, args, error_message)
+                suggestion=self._get_input_suggestion(tool_name, action, args, error_message),
+                known_solution=known_solution
             )
         
         if category == ErrorCategory.NOT_FOUND:
-            # Try to find alternatives
             alternative = await self._find_alternative(tool_name, action, args, error_message)
             if alternative:
+                await self._record_error(error_record)
                 return RecoveryResult(
                     success=False,
                     action_taken="found_alternative",
-                    suggestion=alternative
+                    suggestion=alternative,
+                    known_solution=known_solution
                 )
         
         # Attempt retries for transient/rate-limit errors
@@ -305,8 +425,13 @@ class ErrorRecovery:
             error_record.recovery_success = result.success
             await self._record_error(error_record)
             
+            # If recovery succeeded, log the solution
+            if result.success and self._db:
+                await self._update_solution(tool_name, action, category.value, "Retry succeeded after transient error")
+            
             end_time = datetime.now()
             result.total_time_ms = (end_time - start_time).total_seconds() * 1000
+            result.known_solution = known_solution
             
             return result
         
@@ -317,8 +442,41 @@ class ErrorRecovery:
             success=False,
             action_taken="no_recovery",
             error=error_message,
-            suggestion=self._get_generic_suggestion(category)
+            suggestion=self._get_generic_suggestion(category),
+            known_solution=known_solution
         )
+    
+    async def _log_error_to_db(self, tool_name: str, action: str, error_type: str, 
+                               error_message: str, context: Dict[str, Any]):
+        """Log error pattern to database"""
+        if not self._db:
+            return
+        
+        try:
+            await self._db.log_error_pattern(
+                tool_name=tool_name,
+                action_name=action,
+                error_type=error_type,
+                error_message=error_message[:500],
+                context=context
+            )
+        except Exception as e:
+            logging.debug(f"Failed to log error to database: {e}")
+    
+    async def _update_solution(self, tool_name: str, action: str, error_type: str, solution: str):
+        """Update solution for an error pattern in database"""
+        if not self._db:
+            return
+        
+        try:
+            await self._db.update(
+                "error_patterns",
+                {"solution": solution, "last_occurred": datetime.now().isoformat()},
+                "tool_name = ? AND action_name = ? AND error_type = ?",
+                (tool_name, action, error_type)
+            )
+        except Exception as e:
+            logging.debug(f"Failed to update solution: {e}")
     
     async def _retry_with_backoff(
         self,
@@ -332,13 +490,11 @@ class ErrorRecovery:
         last_error = None
         
         for attempt in range(config.max_retries):
-            # Calculate delay with exponential backoff
             delay_ms = min(
                 config.base_delay_ms * (config.exponential_base ** attempt),
                 config.max_delay_ms
             )
             
-            # Add jitter if enabled
             if config.jitter:
                 delay_ms = delay_ms * (0.5 + random.random())
             
@@ -347,11 +503,9 @@ class ErrorRecovery:
             await asyncio.sleep(delay_ms / 1000)
             
             try:
-                # Rebuild args with action
                 full_args = {"action": action, **args}
                 result = await executor(tool_name, full_args)
                 
-                # Check if successful
                 if hasattr(result, 'status'):
                     if result.status.value == "success":
                         return RecoveryResult(
@@ -363,7 +517,6 @@ class ErrorRecovery:
                     else:
                         last_error = result.error if hasattr(result, 'error') else str(result)
                 else:
-                    # Assume success if no status
                     return RecoveryResult(
                         success=True,
                         action_taken="retry_succeeded",
@@ -393,7 +546,6 @@ class ErrorRecovery:
         """Try to find an alternative when resource not found"""
         suggestions = []
         
-        # File/path not found suggestions
         if 'path' in args or 'file' in args or 'directory' in args:
             path = args.get('path') or args.get('file_path') or args.get('directory', '')
             suggestions.append(f"The path '{path}' was not found.")
@@ -402,7 +554,6 @@ class ErrorRecovery:
             suggestions.append("2. Check if the path has a typo?")
             suggestions.append("3. Look in common locations?")
         
-        # App not found suggestions
         if action in ['open_app', 'find_app_path'] and 'app' in args:
             app = args.get('app', '')
             suggestions.append(f"Could not find '{app}'.")
@@ -436,7 +587,6 @@ class ErrorRecovery:
         """Get suggestion for invalid input errors"""
         suggestions = [f"Invalid input for {tool_name}.{action}."]
         
-        # Try to identify which argument is problematic
         if 'argument' in error_message.lower() or 'parameter' in error_message.lower():
             suggestions.append("Please check the arguments provided.")
         
@@ -465,8 +615,33 @@ class ErrorRecovery:
 
     async def record_user_resolution(self, error_message: str, resolution: str):
         """Record how user resolved an error for learning"""
+        # Update in database
+        if self._db:
+            try:
+                # Find matching recent error and update solution
+                recent = await self._db.select(
+                    "error_patterns",
+                    "*",
+                    "error_message LIKE ?",
+                    (f"%{error_message[:100]}%",),
+                    order_by="last_occurred DESC",
+                    limit=1
+                )
+                
+                if recent:
+                    await self._db.update(
+                        "error_patterns",
+                        {"solution": resolution},
+                        "id = ?",
+                        (recent[0]["id"],)
+                    )
+                    logging.info(f"Recorded user resolution in database: {resolution[:50]}")
+                    return
+            except Exception as e:
+                logging.debug(f"Database update failed: {e}")
+        
+        # Fallback to in-memory
         async with self._lock:
-            # Find matching recent error
             for record in reversed(self._error_history[-20:]):
                 if error_message in record.error_message:
                     record.user_resolution = resolution
@@ -476,24 +651,73 @@ class ErrorRecovery:
     
     async def get_similar_error_resolutions(self, error_message: str) -> List[str]:
         """Get resolutions from similar past errors"""
+        resolutions = []
+        
+        # Try database first
+        if self._db:
+            try:
+                # Search for similar errors with solutions
+                similar = await self._db.select(
+                    "error_patterns",
+                    "*",
+                    "solution IS NOT NULL",
+                    order_by="last_occurred DESC",
+                    limit=50
+                )
+                
+                error_lower = error_message.lower()
+                for err in similar:
+                    err_msg = err.get("error_message", "").lower()
+                    if any(word in err_msg for word in error_lower.split()[:5]):
+                        if err.get("solution"):
+                            resolutions.append(err["solution"])
+                
+                if resolutions:
+                    return list(set(resolutions))[:3]
+            except Exception as e:
+                logging.debug(f"Database query failed: {e}")
+        
+        # Fallback to in-memory
         async with self._lock:
-            resolutions = []
             error_lower = error_message.lower()
             
             for record in self._error_history:
                 if record.user_resolution:
-                    # Check for similar error patterns
                     if any(word in record.error_message.lower() 
                            for word in error_lower.split()[:5]):
                         resolutions.append(record.user_resolution)
             
-            return list(set(resolutions))[-3:]  # Return up to 3 unique resolutions
+            return list(set(resolutions))[-3:]
     
     async def get_error_stats(self) -> Dict[str, Any]:
         """Get statistics about errors"""
+        # Try database first
+        if self._db:
+            try:
+                total = await self._db.count("error_patterns")
+                with_solutions = await self._db.count("error_patterns", "solution IS NOT NULL")
+                
+                # Get category breakdown
+                category_counts = {}
+                for cat in ErrorCategory:
+                    count = await self._db.count("error_patterns", "error_type = ?", (cat.value,))
+                    if count > 0:
+                        category_counts[cat.value] = count
+                
+                return {
+                    "total_errors": total,
+                    "with_solutions": with_solutions,
+                    "by_category": category_counts,
+                    "solution_rate": f"{(with_solutions/total*100):.1f}%" if total > 0 else "N/A",
+                    "source": "database"
+                }
+            except Exception as e:
+                logging.debug(f"Database stats failed: {e}")
+        
+        # Fallback to in-memory
         async with self._lock:
             if not self._error_history:
-                return {"total_errors": 0}
+                return {"total_errors": 0, "source": "memory"}
             
             category_counts = {}
             recovery_success = 0
@@ -513,7 +737,8 @@ class ErrorRecovery:
                 "by_category": category_counts,
                 "recovery_attempted": recovery_attempted,
                 "recovery_success": recovery_success,
-                "recovery_rate": f"{(recovery_success/recovery_attempted*100):.1f}%" if recovery_attempted > 0 else "N/A"
+                "recovery_rate": f"{(recovery_success/recovery_attempted*100):.1f}%" if recovery_attempted > 0 else "N/A",
+                "source": "memory"
             }
     
     async def set_retry_config(self, category: ErrorCategory, config: RetryConfig):
@@ -522,35 +747,34 @@ class ErrorRecovery:
             self._retry_configs[category] = config
     
     async def _record_error(self, record: ErrorRecord):
-        """Record an error to history"""
+        """Record an error to history (in-memory cache)"""
         async with self._lock:
             self._error_history.append(record)
             
-            # Keep only last 100 errors
             if len(self._error_history) > 100:
                 self._error_history = self._error_history[-100:]
             
-            # Save periodically
             if len(self._error_history) % 10 == 0:
                 await self._save_error_history()
     
     async def _save_error_history(self):
-        """Save error history to file"""
+        """Save error history to JSON file (backup/transparency)"""
         try:
             data = {
                 "last_updated": datetime.now().isoformat(),
+                "note": "This is a backup file. Primary storage is in sakura.db",
                 "errors": [
                     {
                         "timestamp": r.timestamp,
                         "tool_name": r.tool_name,
                         "action": r.action,
-                        "error_message": r.error_message[:500],  # Truncate long messages
+                        "error_message": r.error_message[:500],
                         "category": r.category.value,
                         "recovery_attempted": r.recovery_attempted,
                         "recovery_success": r.recovery_success,
                         "user_resolution": r.user_resolution
                     }
-                    for r in self._error_history[-50:]  # Save last 50
+                    for r in self._error_history[-50:]
                 ]
             }
             async with aiofiles.open(self.error_log_file, 'w') as f:
@@ -559,7 +783,7 @@ class ErrorRecovery:
             logging.error(f"Failed to save error history: {e}")
     
     async def _load_error_history(self):
-        """Load error history from file"""
+        """Load error history from JSON file (for in-memory cache)"""
         try:
             async with aiofiles.open(self.error_log_file, 'r') as f:
                 content = await f.read()
@@ -579,7 +803,7 @@ class ErrorRecovery:
                 self._error_history.append(record)
                 
         except FileNotFoundError:
-            pass  # No history yet
+            pass
         except Exception as e:
             logging.warning(f"Error loading error history: {e}")
     

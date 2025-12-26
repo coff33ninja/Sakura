@@ -5,6 +5,43 @@ All notable changes to Sakura AI will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.0] - 2025-12-26
+
+### 🗄️ Database Integration for AI Modules
+
+Unified database storage for error recovery and user preferences.
+
+#### Added
+
+**Error Recovery Database Integration (Phase 7)**
+- Error patterns now stored in `error_patterns` table
+- Queries known solutions before recovery attempts
+- Cross-references with tool patterns for better insights
+- Auto-migrates existing JSON data on first run
+- JSON kept as backup for transparency
+- New `known_solution` field in RecoveryResult
+
+**User Preferences Database Integration (Phase 8)**
+- Corrections stored in `learned_corrections` table
+- Preferences stored in `user_info` table
+- `get_corrections_for_tool()` - Query corrections by tool/action
+- `get_preference_stats()` - Statistics about stored preferences
+- Auto-migrates existing JSON data on first run
+- JSON kept as backup for transparency
+
+#### Changed
+- `modules/error_recovery.py` - Now uses database with JSON fallback
+- `modules/user_preferences.py` - Now uses database with JSON fallback
+- Both modules maintain JSON exports for user transparency
+- Database is single source of truth when available
+
+#### Technical
+- Optional database integration (graceful fallback to JSON)
+- Singleton database connection shared across modules
+- Automatic migration from legacy JSON files
+
+---
+
 ## [1.1.1] - 2025-12-26
 
 ### 🔌 Integration Improvements

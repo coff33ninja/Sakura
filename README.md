@@ -454,6 +454,24 @@ pygame>=2.5.0
 
 ## 🎉 Version History
 
+### v1.2.0 - Database Integration (2025-12-26)
+
+Unified database storage for AI modules - error recovery and user preferences now use SQLite.
+
+#### 🗄️ Error Recovery Database Integration
+- Error patterns stored in `error_patterns` table
+- Queries known solutions before recovery attempts
+- Cross-references with tool patterns
+- Auto-migrates JSON data, keeps JSON as backup
+
+#### 📝 User Preferences Database Integration
+- Corrections stored in `learned_corrections` table
+- Preferences stored in `user_info` table
+- New `get_corrections_for_tool()` for tool-specific queries
+- Auto-migrates JSON data, keeps JSON as backup
+
+---
+
 ### v1.1.1 - Integration Improvements (2025-12-26)
 
 Fixes and enhancements for MCP and Smart Home integrations.
