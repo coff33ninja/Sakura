@@ -913,19 +913,42 @@ class WindowsAutomation(BaseTool):
             return ToolResult(status=ToolStatus.ERROR, error=str(e))
     
     async def _execute_script(self, script_content: str, script_type: str = "powershell", 
-                              script_name: str = "", execute: bool = True) -> ToolResult:
+                              script_name: str = "", execute: bool = True, 
+                              use_venv: bool = True) -> ToolResult:
         """Create and execute a script in the sandbox folder for user review.
         
         All scripts are saved to: ~/Documents/Sakura/scripts/
         Scripts are ALWAYS kept for user review.
+        
+        Args:
+            script_content: The script code to execute
+            script_type: powershell, python, batch, cmd, javascript, vbscript
+            script_name: Optional name for the script file
+            execute: Whether to execute the script (default True)
+            use_venv: For Python, use project venv if available (default True)
         """
         try:
             from datetime import datetime
             
+            # Find the best Python executable
+            def get_python_cmd():
+                # Check for project venv first (where Sakura runs from)
+                project_venv = Path(__file__).parent.parent.parent / ".venv" / "Scripts" / "python.exe"
+                if use_venv and project_venv.exists():
+                    return [str(project_venv)]
+                
+                # Check current directory venv
+                cwd_venv = Path(".venv/Scripts/python.exe")
+                if use_venv and cwd_venv.exists():
+                    return [str(cwd_venv.absolute())]
+                
+                # Fall back to system Python
+                return ["python"]
+            
             # Determine file extension and executor
             script_config = {
                 "powershell": {"ext": ".ps1", "cmd": ["powershell", "-ExecutionPolicy", "Bypass", "-File"]},
-                "python": {"ext": ".py", "cmd": [str(Path(".venv/Scripts/python").absolute()) if Path(".venv").exists() else "python"]},
+                "python": {"ext": ".py", "cmd": get_python_cmd()},
                 "batch": {"ext": ".bat", "cmd": ["cmd", "/c"]},
                 "cmd": {"ext": ".bat", "cmd": ["cmd", "/c"]},
                 "javascript": {"ext": ".js", "cmd": ["node"]},
@@ -2471,6 +2494,7 @@ try {
                     },
                     "script_name": {"type": "string", "description": "Name for the script file (optional, auto-generated if not provided)"},
                     "execute": {"type": "boolean", "description": "Execute the script after creating (default true)", "default": True},
+                    "use_venv": {"type": "boolean", "description": "For Python scripts, use project venv (default true). Set false to use system Python with user-installed packages.", "default": True},
                     "x": {"type": "integer", "description": "X coordinate for mouse movement or position query"},
                     "y": {"type": "integer", "description": "Y coordinate for mouse movement or position query"},
                     "absolute": {"type": "boolean", "description": "Use absolute coordinates (default true)", "default": True},

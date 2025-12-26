@@ -174,13 +174,17 @@ class DeveloperTools(BaseTool):
         
         for tool, cmd in tools_to_check.items():
             try:
-                result = await asyncio.to_thread(
+                proc_result = await asyncio.to_thread(
                     subprocess.run, cmd,
                     capture_output=True, text=True, timeout=5,
                     creationflags=subprocess.CREATE_NO_WINDOW if self.is_windows else 0
                 )
                 # Some tools return non-zero for help/version but still exist
+                # Store version info if available
                 self.available_tools[tool] = True
+                version_output = proc_result.stdout.strip() or proc_result.stderr.strip()
+                if version_output and len(version_output) < 100:
+                    logging.debug(f"Tool {tool} version: {version_output[:50]}")
             except FileNotFoundError:
                 self.available_tools[tool] = False
             except Exception:
@@ -773,13 +777,36 @@ class DeveloperTools(BaseTool):
     
     # ==================== PACKAGE MANAGEMENT ====================
     
-    async def _pip_install(self, package: str, upgrade: bool = False, **kwargs) -> ToolResult:
-        """Install Python package with pip"""
+    async def _pip_install(self, package: str, upgrade: bool = False, 
+                           use_venv: bool = True, **kwargs) -> ToolResult:
+        """Install Python package with pip
+        
+        Args:
+            package: Package name to install
+            upgrade: Upgrade if already installed
+            use_venv: Install to project venv (default True). Set False for user/system install.
+        """
         if not self.available_tools.get("pip"):
             return ToolResult(status=ToolStatus.ERROR, error="pip is not installed")
         
         try:
-            cmd = ["pip", "install"]
+            # Determine which pip to use
+            if use_venv:
+                # Try project venv first
+                project_venv_pip = Path(__file__).parent.parent.parent / ".venv" / "Scripts" / "pip.exe"
+                if project_venv_pip.exists():
+                    pip_cmd = str(project_venv_pip)
+                else:
+                    # Fall back to current directory venv
+                    cwd_venv_pip = Path(".venv/Scripts/pip.exe")
+                    if cwd_venv_pip.exists():
+                        pip_cmd = str(cwd_venv_pip.absolute())
+                    else:
+                        pip_cmd = "pip"
+            else:
+                pip_cmd = "pip"
+            
+            cmd = [pip_cmd, "install"]
             if upgrade:
                 cmd.append("--upgrade")
             cmd.append(package)
@@ -792,10 +819,11 @@ class DeveloperTools(BaseTool):
             if result.returncode != 0:
                 return ToolResult(status=ToolStatus.ERROR, error=result.stderr.strip())
             
+            venv_note = " (to project venv)" if use_venv and "venv" in pip_cmd else " (to user packages)"
             return ToolResult(
                 status=ToolStatus.SUCCESS,
-                data={"output": result.stdout.strip()},
-                message=f"📦 Installed: {package}"
+                data={"output": result.stdout.strip(), "pip_used": pip_cmd},
+                message=f"📦 Installed: {package}{venv_note}"
             )
             
         except Exception as e:
@@ -2495,6 +2523,7 @@ class DeveloperTools(BaseTool):
                     # Package management params
                     "package": {"type": "string", "description": "Package name to install/uninstall"},
                     "upgrade": {"type": "boolean", "description": "Upgrade package (pip)"},
+                    "use_venv": {"type": "boolean", "description": "For pip: install to project venv (default True). Set False for user/system install.", "default": True},
                     "global_install": {"type": "boolean", "description": "Install globally (npm)"},
                     "dev": {"type": "boolean", "description": "Install as dev dependency (npm)"},
                     "outdated": {"type": "boolean", "description": "Show only outdated packages (pip)"},

@@ -86,3 +86,6 @@ user_preferences.json
 
 # Wake word files
 backups/sakura_wake_word/Sakura_en_windows_v4_0_0.ppn
+sakura.db
+sakura.db-shm
+sakura.db-wal
