@@ -110,6 +110,8 @@ class AsyncConfigLoader:
         if 'gemini' in config_dict:
             gemini_config = config_dict['gemini']
             config.gemini.model = gemini_config.get('model', config.gemini.model)
+            config.gemini.personality = gemini_config.get('personality', config.gemini.personality)
+            config.gemini.assistant_name = gemini_config.get('assistant_name', config.gemini.assistant_name)
         
         if 'session_file' in config_dict:
             config.session_file = config_dict['session_file']
@@ -144,6 +146,10 @@ class AsyncConfigLoader:
         # Gemini settings
         if os.getenv('GEMINI_MODEL'):
             config.gemini.model = os.getenv('GEMINI_MODEL')
+        if os.getenv('GEMINI_PERSONALITY'):
+            config.gemini.personality = os.getenv('GEMINI_PERSONALITY')
+        if os.getenv('ASSISTANT_NAME'):
+            config.gemini.assistant_name = os.getenv('ASSISTANT_NAME')
         
         # Session file
         if os.getenv('SESSION_FILE'):
