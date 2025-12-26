@@ -581,6 +581,30 @@ COMMON MCP SERVERS (run with windows run_command "uvx <server>"):
                 tool_name, action, tool_args
             )
             
+            # Check for learned corrections before executing
+            corrections = await self.conversation_context.get_relevant_corrections(
+                user_input=self._current_user_input or "",
+                tool_name=tool_name
+            )
+            
+            # Actually apply corrections to modify behavior
+            correction_notes = []
+            if corrections:
+                tool_args, correction_notes = await self._apply_corrections(
+                    tool_name, action, tool_args, corrections
+                )
+            
+            # Check tool insights for reliability warnings
+            tool_warning = None
+            if hasattr(self.conversation_context, '_db') and self.conversation_context._db:
+                try:
+                    insights = await self.conversation_context._db.get_tool_insights(tool_name, action)
+                    if not insights.get("is_reliable"):
+                        tool_warning = insights.get("warning")
+                        logging.warning(f"⚠️ Tool reliability warning: {tool_warning}")
+                except Exception:
+                    pass
+            
             logging.info(f"🔧 Tool call: {tool_name} with args: {tool_args}" + (" [BACKGROUND]" if run_in_background else ""))
             
             # Track tool usage for conversation context
@@ -626,10 +650,26 @@ COMMON MCP SERVERS (run with windows run_command "uvx <server>"):
                 continue  # Skip normal execution
             
             # Execute tool via registry (normal synchronous execution)
+            import time
+            start_time = time.time()
             result = await self.tool_registry.execute_tool(tool_name, **tool_args)
+            duration_ms = int((time.time() - start_time) * 1000)
             
             # Log action to memory for history
             await self._log_action(tool_name, tool_args, result)
+            
+            # Update tool patterns for learning
+            if hasattr(self.conversation_context, '_db') and self.conversation_context._db:
+                try:
+                    await self.conversation_context._db.update_tool_pattern(
+                        tool_name=tool_name,
+                        action_name=action,
+                        success=(result.status.value == "success"),
+                        duration_ms=duration_ms,
+                        params=tool_args
+                    )
+                except Exception as e:
+                    logging.debug(f"Tool pattern update error: {e}")
             
             # Infer preferences from successful actions
             if result.status.value == "success":
@@ -643,6 +683,19 @@ COMMON MCP SERVERS (run with windows run_command "uvx <server>"):
             else:
                 error_msg = result.error or result.message
                 
+                # Check for known error solutions before standard recovery
+                known_solution = None
+                if hasattr(self.conversation_context, '_db') and self.conversation_context._db:
+                    try:
+                        solutions = await self.conversation_context._db.get_error_solutions(
+                            tool_name, action
+                        )
+                        if solutions:
+                            known_solution = solutions[0]
+                            logging.info(f"🔧 Found known solution: {known_solution.get('solution', '')[:50]}")
+                    except Exception:
+                        pass
+                
                 # Attempt error recovery
                 recovery_result = await self.error_recovery.attempt_recovery(
                     tool_name=tool_name,
@@ -655,8 +708,26 @@ COMMON MCP SERVERS (run with windows run_command "uvx <server>"):
                 if recovery_result.success:
                     response_text = f"Recovered after {recovery_result.retries_used} retries: {recovery_result.result}"
                     logging.info(f"🔄 Recovery succeeded for {tool_name}")
+                    
+                    # Log the solution that worked
+                    if hasattr(self.conversation_context, '_db') and self.conversation_context._db:
+                        try:
+                            await self.conversation_context._db.log_error_pattern(
+                                tool_name=tool_name,
+                                action_name=action,
+                                error_type="recovered",
+                                error_message=error_msg,
+                                solution=f"Auto-recovered after {recovery_result.retries_used} retries"
+                            )
+                        except Exception:
+                            pass
                 else:
                     response_text = f"Error: {error_msg}"
+                    
+                    # Include known solution if available
+                    if known_solution and known_solution.get('solution'):
+                        response_text += f"\n\n🔧 Known fix: {known_solution['solution']}"
+                    
                     if recovery_result.suggestion:
                         response_text += f"\n\nSuggestion: {recovery_result.suggestion}"
                     
@@ -686,6 +757,68 @@ COMMON MCP SERVERS (run with windows run_command "uvx <server>"):
             
             # Send result back to Gemini
             await self.gemini_client.send_function_response(call_id, tool_name, response_text)
+    
+    async def _apply_corrections(self, tool_name: str, action: str, tool_args: dict, corrections: list) -> tuple:
+        """Apply learned corrections to modify tool behavior"""
+        notes = []
+        modified_args = tool_args.copy()
+        
+        for corr in corrections[:3]:  # Apply top 3 corrections
+            correct_behavior = corr.get('correct_behavior', '')
+            wrong_behavior = corr.get('wrong_behavior', '')
+            trigger = corr.get('trigger_pattern', '')
+            corr_id = corr.get('id')
+            
+            if not correct_behavior:
+                continue
+            
+            # Log that we're applying this correction (include trigger and wrong behavior for context)
+            log_msg = f"📝 Applying correction: {correct_behavior[:60]}..."
+            if wrong_behavior:
+                log_msg += f" (avoiding: {wrong_behavior[:30]})"
+            logging.info(log_msg)
+            notes.append(f"Applied correction for '{trigger[:30]}': {correct_behavior[:50]}")
+            
+            # Mark correction as used (increases confidence)
+            if corr_id and hasattr(self.conversation_context, '_db') and self.conversation_context._db:
+                try:
+                    await self.conversation_context._db.mark_correction_used(corr_id)
+                except Exception:
+                    pass
+            
+            # Try to extract actionable modifications from correction text
+            correct_lower = correct_behavior.lower()
+            
+            # Path-related corrections
+            if 'path' in correct_lower or 'folder' in correct_lower or 'directory' in correct_lower:
+                # Extract path from correction if mentioned
+                import re
+                path_match = re.search(r'["\']?([a-zA-Z]:\\[^"\']+|/[^"\']+)["\']?', correct_behavior)
+                if path_match and 'path' in modified_args:
+                    modified_args['path'] = path_match.group(1)
+                    notes.append(f"Changed path to: {path_match.group(1)}")
+            
+            # Search drive corrections
+            if 'drive' in correct_lower:
+                drive_match = re.search(r'\b([a-zA-Z]):\s*drive\b|\bdrive\s*([a-zA-Z]):', correct_lower)
+                if drive_match and 'search_drive' in modified_args:
+                    drive = drive_match.group(1) or drive_match.group(2)
+                    modified_args['search_drive'] = f"{drive.upper()}:\\"
+                    notes.append(f"Changed search drive to: {drive.upper()}:")
+            
+            # Depth/limit corrections
+            if 'depth' in correct_lower or 'deeper' in correct_lower:
+                if 'max_depth' in modified_args:
+                    current = modified_args.get('max_depth', 3)
+                    if 'more' in correct_lower or 'deeper' in correct_lower or 'increase' in correct_lower:
+                        modified_args['max_depth'] = min(current + 2, 10)
+                        notes.append(f"Increased depth to: {modified_args['max_depth']}")
+            
+            # Don't/avoid corrections - these are warnings, not modifications
+            if correct_lower.startswith("don't") or correct_lower.startswith("avoid") or correct_lower.startswith("never"):
+                notes.append(f"⚠️ Remember: {correct_behavior[:50]}")
+        
+        return modified_args, notes
     
     async def _log_action(self, tool_name: str, args: dict, result):
         """Log action to memory for history tracking"""

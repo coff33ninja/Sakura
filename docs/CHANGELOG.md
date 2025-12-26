@@ -5,6 +5,79 @@ All notable changes to Sakura AI will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.0] - 2025-12-26
+
+### 🧠 Intelligent Memory System
+
+Major upgrade to Sakura's memory and learning capabilities.
+
+#### Added
+
+**SQLite Database Backend**
+- New `modules/database.py` - Async SQLite wrapper with connection pooling
+- 17 database tables for comprehensive data storage
+- WAL mode for better concurrent access
+- Foreign keys and proper indexing
+- JSON export every 5 minutes for user transparency
+
+**FTS5 Full-Text Search**
+- `memory_fts` virtual table with porter tokenizer
+- BM25 relevance ranking
+- Auto-indexing on insert
+- New `search_fts` memory action
+
+**User Feedback Detection**
+- `_detect_correction()` - Detects "No, I meant...", "Not that", etc.
+- `_detect_positive_feedback()` - Detects "Perfect!", "Thanks!", etc.
+- `_detect_negative_feedback()` - Detects "That's wrong", "Stop it", etc.
+- All feedback logged to `user_feedback` table
+
+**Self-Learning Corrections**
+- `learned_corrections` table with trigger patterns
+- `_apply_corrections()` in main.py modifies tool behavior
+- Confidence scoring with decay over time
+- Session-aware vs permanent corrections
+
+**Tool Pattern Analytics**
+- `tool_patterns` table tracks success rates and duration
+- `get_tool_insights()` returns reliability warnings
+- Warns before using tools with <50% success rate
+
+**Error Pattern Tracking**
+- `error_patterns` table with solutions
+- `get_error_solutions()` queries known fixes
+- Auto-applies solutions on repeat errors
+
+**Memory Cleanup**
+- `prune_old_data()` with configurable retention
+- Keeps high-value data (with feedback)
+- VACUUM for disk space reclamation
+- `get_database_stats()` for monitoring
+
+**New Memory Actions**
+- `search_fts` - Fast full-text search
+- `log_feedback` - Log user corrections/reactions
+- `get_corrections` - Get relevant learned corrections
+- `get_full_history` - Query infinite conversation history
+- `get_error_solutions` - Get known solutions for errors
+- `get_history_stats` - Statistics about stored history
+- `log_exchange` - Log full conversation exchange
+
+#### Changed
+- Memory store now uses SQLite as primary storage
+- JSON files are now exports for transparency (not primary storage)
+- Conversation context logs exchanges to database automatically
+- Tool execution tracks duration and updates patterns
+- Error handling queries known solutions first
+
+#### Technical
+- Added `aiosqlite>=0.22.1` to requirements
+- Database auto-migrates from legacy JSON on first run
+- Singleton pattern for database connection
+- All database operations are async with proper locking
+
+---
+
 ## [1.0.0] - 2025-12-24
 
 ### 🎉 First Stable Release

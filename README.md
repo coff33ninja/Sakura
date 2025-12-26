@@ -63,14 +63,19 @@
 - **Safe execution** - Scripts always saved for user review
 - **Visible terminals** - Can launch scripts in new terminal windows
 
-### 🧠 Self-Learning Memory System (16 Actions)
+### 🧠 Self-Learning Memory System (16+ Actions)
+- **SQLite Database** - Fast, reliable storage with full-text search
+- **JSON Transparency** - Exports to JSON every 5 minutes for user visibility
 - **Auto-logging** - Every action recorded with timestamp
 - **Location memory** - Remembers file paths, app locations discovered
 - **Script tracking** - Logs all scripts created with paths
-- **Conversation history** - Summaries of past conversations
+- **Infinite conversation history** - Full history in database, AI queries only what's needed
 - **Topic tracking** - What you've discussed and how often
 - **Cross-search** - Search across ALL memory categories
-- **Session stats** - Track usage over time
+- **FTS5 Full-Text Search** - Lightning-fast search with relevance ranking
+- **User Feedback Learning** - Learns from corrections, positive/negative feedback
+- **Error Pattern Tracking** - Remembers solutions to avoid repeating mistakes
+- **Tool Usage Analytics** - Tracks success rates and performance per tool
 
 ### 🔍 System Discovery (16 Actions)
 - **PC info** - Computer name, username, OS
@@ -228,7 +233,7 @@ start.bat
 |------|---------|-------------|
 | `windows` | 46 | Full Windows control, smart clicking, screen reading, hotkeys, power |
 | `system_info` | 16 | System discovery, hardware specs, multi-monitor, file search |
-| `memory` | 16 | Persistent memory |
+| `memory` | 22 | Persistent memory with SQLite + JSON |
 | `web_search` | 1 | DuckDuckGo search |
 | `web_fetch` | 1 | URL content extraction |
 | `discord` | 5 | Discord integration |
@@ -237,7 +242,7 @@ start.bat
 | `productivity` | 23 | Reminders, timers, notes, to-do lists |
 | `developer` | 33 | Git, code execution, packages, SSH |
 
-**Total: 150 tool actions**
+**Total: 156 tool actions**
 
 ## 📁 Project Structure
 
@@ -250,17 +255,20 @@ sakura-ai/
 │   ├── persona.py          # Personality definitions
 │   ├── config.py           # Configuration management
 │   ├── api_key_manager.py  # Multi-key rotation
-│   └── session_manager.py  # Session persistence
+│   ├── session_manager.py  # Session persistence
+│   ├── database.py         # SQLite database with FTS5
+│   └── conversation_context.py # Context + feedback detection
 ├── tools/
 │   ├── base.py             # Base tool classes
 │   ├── windows/            # Windows automation (46 actions)
-│   ├── system_info/        # System discovery (15 actions)
-│   ├── memory/             # Memory system (16 actions)
+│   ├── system_info/        # System discovery (16 actions)
+│   ├── memory/             # Memory system (22 actions)
 │   ├── web/                # Web search & fetch
 │   ├── discord/            # Discord integration
 │   ├── smart_home/         # Home Assistant
 │   └── mcp/                # MCP client
-├── sakura_memory.json      # Persistent memory storage
+├── sakura.db               # SQLite database (primary storage)
+├── sakura_memory.json      # JSON export (user transparency)
 ├── requirements.txt        # Python dependencies
 └── .env                    # Configuration (create this)
 ```
@@ -332,19 +340,38 @@ Organized by type:
 
 ## 🧠 Memory System
 
-Sakura automatically remembers:
+Sakura uses a **SQLite database** for fast, reliable storage with **JSON exports** for transparency.
+
+### Why SQLite + JSON?
+- **SQLite**: Fast queries, full-text search (FTS5), ACID compliant, handles concurrent access
+- **JSON Export**: User can see/edit memories, backup-friendly, transparent operation
+- **Best of both**: Database performance + human-readable transparency
+
+### What Sakura Remembers
 
 | Category | What's Stored |
 |----------|---------------|
-| `action_log` | Every tool action with timestamp |
+| `action_log` | Every tool action with timestamp and duration |
 | `discovered_locations` | File paths, app locations found |
 | `scripts_created` | Scripts made with full paths |
-| `conversation_history` | Conversation summaries |
+| `conversation_history` | Full conversation exchanges (infinite) |
 | `topics_discussed` | Topics and frequency |
 | `user_info` | Your name, preferences |
 | `facts` | Things you've told her |
 | `important_dates` | Birthdays, anniversaries |
-| `session_stats` | Usage statistics |
+| `user_feedback` | Corrections, positive/negative reactions |
+| `learned_corrections` | Patterns to avoid repeating mistakes |
+| `tool_patterns` | Success rates, performance per tool |
+| `error_patterns` | Known errors and their solutions |
+
+### Self-Learning Features
+
+- **Correction Detection**: "No, I meant..." → Sakura learns what you actually wanted
+- **Positive Feedback**: "Perfect!", "Thanks!" → Reinforces good behavior
+- **Negative Feedback**: "That's wrong", "Stop it" → Learns what to avoid
+- **Error Solutions**: Remembers what fixed errors, applies automatically
+- **Confidence Decay**: Old unused corrections fade over time
+- **Tool Insights**: Warns before using unreliable tools (<50% success rate)
 
 ## ⚠️ Important: What Sakura Actually Is
 
@@ -426,6 +453,79 @@ pygame>=2.5.0
 ```
 
 ## 🎉 Version History
+
+### v1.1.0 - Intelligent Memory System (2025-12-26)
+
+Major upgrade to Sakura's memory and learning capabilities with SQLite database backend.
+
+#### 🧠 SQLite Database + JSON Transparency
+- **Why**: JSON files get slow with large data, no efficient querying, file locking issues
+- **Solution**: SQLite for speed + JSON exports every 5 minutes for user visibility
+- **Result**: Fast queries, full-text search, infinite history, AND you can still see/edit the JSON
+
+#### 🔍 FTS5 Full-Text Search
+- Lightning-fast search across all memories using SQLite FTS5
+- BM25 relevance ranking (most relevant results first)
+- New `search_fts` action for instant results
+- Auto-indexes new content on insert
+
+#### 📝 User Feedback Learning
+Sakura now detects and learns from your reactions:
+
+| Feedback Type | Detection | What Sakura Learns |
+|---------------|-----------|-------------------|
+| **Corrections** | "No, I meant...", "Not that", "I said..." | What you actually wanted |
+| **Positive** | "Perfect!", "Thanks!", "Exactly!" | Reinforces good behavior |
+| **Negative** | "That's wrong", "Stop it", "Ugh" | What to avoid |
+| **Preferences** | "I prefer...", "Always...", "Next time..." | Permanent preferences |
+
+#### 🔧 Self-Healing Error Recovery
+- Queries known error solutions before standard recovery
+- Shows "Known fix: ..." when encountering familiar errors
+- Logs successful recoveries as solutions for future use
+- Error patterns tracked with occurrence counts
+
+#### 📊 Tool Pattern Analytics
+- Tracks success/failure rate per tool action
+- Tracks average execution duration
+- Warns before using unreliable tools (<50% success rate)
+- Helps identify problematic tool configurations
+
+#### 🎯 Correction Application
+- Actually USES learned corrections (not just logs them)
+- Modifies tool parameters based on past corrections
+- Extracts paths, drives, depth from correction text
+- Marks corrections as used (increases confidence)
+
+#### ⏰ Confidence Decay
+- Old corrections lose confidence over time (10% per week if unused)
+- Prevents stale corrections from affecting behavior
+- Reinforced corrections maintain high confidence
+- Minimum floor prevents complete deletion
+
+#### 🗂️ Session-Aware Corrections
+- Some corrections are session-specific ("don't do that today")
+- Others are permanent ("always use D: drive for games")
+- Session corrections auto-cleanup when session ends
+
+#### 🧹 Memory Cleanup/Pruning
+- Configurable retention periods (exchanges: 90d, actions: 30d, errors: 60d)
+- Keeps high-value data (with feedback attached)
+- Removes low-confidence unused corrections
+- VACUUM to reclaim disk space
+
+#### 📈 New Memory Actions
+| Action | Description |
+|--------|-------------|
+| `search_fts` | Fast full-text search with relevance ranking |
+| `log_feedback` | Log user corrections/reactions |
+| `get_corrections` | Get relevant learned corrections |
+| `get_full_history` | Query infinite conversation history |
+| `get_error_solutions` | Get known solutions for errors |
+| `get_history_stats` | Statistics about stored history |
+| `log_exchange` | Log full conversation exchange |
+
+---
 
 ### v1.0.0 - First Stable Release (2025-12-24)
 
