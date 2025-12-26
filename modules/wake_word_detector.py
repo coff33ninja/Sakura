@@ -30,6 +30,8 @@ class WakeWordDetector:
         self.is_listening = False
         self._audio_buffer = np.array([], dtype=np.int16)  # Buffer for accumulating audio
         self._frame_length = 512  # Porcupine's required frame length
+        self._last_detection_time = 0  # Debounce: prevent re-triggering within 1 second
+        self._detection_cooldown = 1.0  # Seconds between detections
         
     def initialize(self) -> bool:
         """Initialize the wake word detector"""
@@ -124,11 +126,15 @@ class WakeWordDetector:
         Process audio chunk for wake word detection.
         Buffers audio and processes in 512-sample frames as required by Porcupine.
         Returns wake up response if wake word detected, None otherwise.
+        Includes debouncing to prevent continuous re-triggering.
         """
         if not self.porcupine:
             # If no wake word detector, always listen
             self.is_listening = True
             return None
+        
+        import time
+        current_time = time.time()
             
         try:
             # Convert bytes to numpy array and add to buffer
@@ -145,12 +151,17 @@ class WakeWordDetector:
                 keyword_index = self.porcupine.process(frame)
                 
                 if keyword_index >= 0:
+                    # Debounce: only trigger if enough time has passed since last detection
+                    if current_time - self._last_detection_time < self._detection_cooldown:
+                        return None
+                    
                     # If we are already listening, do not send another wake response for this current listening session
                     if self.is_listening:
                         return None
                     
                     detected_keyword = self.keywords[keyword_index]
                     self.is_listening = True
+                    self._last_detection_time = current_time  # Update last detection time
                     wake_responses = get_wake_responses()
                     wake_response = wake_responses[secrets.randbelow(len(wake_responses))]
                     logging.info(f"Wake word '{detected_keyword}' detected")

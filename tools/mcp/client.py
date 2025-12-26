@@ -167,7 +167,8 @@ class MCPClient(BaseTool):
             
             if process.returncode is not None:
                 stderr = await process.stderr.read()
-                logging.error(f"MCP server {name} exited: {stderr.decode()[:200]}")
+                # logging.error(f"MCP server {name} exited: {stderr.decode()[:200]}")
+                logging.debug(f"MCP server {name} exited: {stderr.decode()[:200]}")
                 return False
             
             tools = await self._get_server_tools_stdio(name)
@@ -177,10 +178,12 @@ class MCPClient(BaseTool):
             return True
             
         except FileNotFoundError:
-            logging.error(f"MCP server {name} command not found: {command[0]}")
+            # logging.error(f"MCP server {name} command not found: {command[0]}")
+            logging.debug(f"MCP server {name} command not found: {command[0]}")
             return False
         except Exception as e:
-            logging.error(f"Failed to start MCP server {name}: {e}")
+            # logging.error(f"Failed to start MCP server {name}: {e}")
+            logging.debug(f"Failed to start MCP server {name}: {e}")
             return False
 
     async def _connect_sse(self, name: str, config: Dict[str, Any]) -> bool:

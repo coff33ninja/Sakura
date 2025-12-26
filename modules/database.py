@@ -423,7 +423,10 @@ class DatabaseManager:
             'conversation_context', 'error_patterns', 'user_info',
             'tool_usage', 'connection_profiles', 'extension_scripts',
             'fts_memory', 'conversation_exchanges_fts', 'event_search',
-            'memory_full_text'
+            'memory_full_text',
+            # Additional tables from legacy modules
+            'facts', 'important_dates', 'conversations', 'scripts',
+            'topics', 'discovered_locations'
         }
         
         return table.lower() in allowed_tables
