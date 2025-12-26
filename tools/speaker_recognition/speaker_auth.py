@@ -116,6 +116,7 @@ class SpeakerAuthentication(BaseTool):
     def __init__(self):
         """Initialize speaker authentication"""
         self.profiles: Dict[str, SpeakerProfile] = {}
+        self.negative_speakers: Dict[str, SpeakerProfile] = {}  # Voices to reject (e.g., assistant's own voice)
         self._lock = asyncio.Lock()
         self._db_manager = None
         self._auth_mode = AuthenticationMode.OPTIONAL
@@ -124,6 +125,7 @@ class SpeakerAuthentication(BaseTool):
         self._min_audio_samples = 5
         self._min_audio_duration_ms = 500
         self._max_audio_duration_ms = 30000
+        self._negative_rejection_threshold = 0.65  # Confidence threshold for rejecting negative speakers
         
     async def initialize(self) -> bool:
         """Initialize database and load profiles"""
@@ -132,7 +134,9 @@ class SpeakerAuthentication(BaseTool):
                 self._db_manager = await get_database()
                 await self._create_schema()
                 await self._load_profiles()
+                await self._load_negative_speakers()
             await self._load_profiles_from_file()
+            await self._load_negative_speakers_from_file()
             logging.info("✅ Speaker Recognition initialized")
             return True
         except Exception as e:
@@ -194,6 +198,20 @@ class SpeakerAuthentication(BaseTool):
                 )
             ''')
             
+            # Negative speakers table (voices to reject/block)
+            await self._db_manager.execute_raw('''
+                CREATE TABLE IF NOT EXISTS negative_speakers (
+                    speaker_id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    rejection_threshold REAL DEFAULT 0.65,
+                    samples_count INTEGER DEFAULT 0,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    reason TEXT,
+                    metadata TEXT
+                )
+            ''')
+            
             # Authentication log
             await self._db_manager.execute_raw('''
                 CREATE TABLE IF NOT EXISTS authentication_log (
@@ -252,6 +270,49 @@ class SpeakerAuthentication(BaseTool):
             except Exception as e:
                 logging.warning(f"Could not load profiles from JSON: {e}")
     
+    async def _load_negative_speakers(self):
+        """Load negative speakers from database"""
+        if not self._db_manager:
+            return
+        
+        try:
+            rows = await self._db_manager.execute_raw('SELECT * FROM negative_speakers')
+            
+            for row in rows:
+                profile = SpeakerProfile(
+                    speaker_id=row['speaker_id'],
+                    name=row['name'],
+                    created_at=row['created_at'],
+                    updated_at=row['updated_at'],
+                    confidence_threshold=row['rejection_threshold'],
+                    samples_count=row['samples_count'],
+                    is_owner=False,
+                    metadata=json.loads(row['metadata'] or '{}')
+                )
+                self.negative_speakers[profile.speaker_id] = profile
+                
+            logging.info(f"🚫 Loaded {len(self.negative_speakers)} negative speaker profile(s)")
+        except Exception as e:
+            logging.warning(f"Could not load negative speakers from DB: {e}")
+    
+    async def _load_negative_speakers_from_file(self):
+        """Load negative speakers from JSON file (fallback)"""
+        neg_file = Path("negative_speakers.json")
+        
+        if neg_file.exists():
+            try:
+                async with aiofiles.open(neg_file, 'r') as f:
+                    content = await f.read()
+                    data = json.loads(content)
+                    
+                    for speaker_id, profile_data in data.items():
+                        if speaker_id not in self.negative_speakers:
+                            self.negative_speakers[speaker_id] = SpeakerProfile(**profile_data)
+                
+                logging.info(f"📄 Loaded {len(self.negative_speakers)} negative speakers from JSON")
+            except Exception as e:
+                logging.warning(f"Could not load negative speakers from JSON: {e}")
+    
     async def execute(self, action: str, **kwargs) -> ToolResult:
         """Execute speaker recognition action"""
         try:
@@ -275,6 +336,16 @@ class SpeakerAuthentication(BaseTool):
                 return await self._verify_audio_quality(**kwargs)
             elif action == "get_speaker_info":
                 return await self._get_speaker_info(**kwargs)
+            elif action == "enroll_negative":
+                return await self._enroll_negative_speaker(**kwargs)
+            elif action == "validate_against_negatives":
+                return await self._validate_against_negatives(**kwargs)
+            elif action == "list_negative_speakers":
+                return await self._list_negative_speakers()
+            elif action == "remove_negative_speaker":
+                return await self._remove_negative_speaker(**kwargs)
+            elif action == "get_negative_speaker_info":
+                return await self._get_negative_speaker_info(**kwargs)
             else:
                 return ToolResult(ToolStatus.ERROR, error=f"Unknown action: {action}")
         except Exception as e:
@@ -307,7 +378,7 @@ class SpeakerAuthentication(BaseTool):
                 for sample in audio_samples:
                     decoded = await self._decode_audio_sample(sample)
                     if decoded is None:
-                        return ToolResult(ToolStatus.ERROR, error=f"Invalid audio sample format")
+                        return ToolResult(ToolStatus.ERROR, error="Invalid audio sample format")
                     decoded_samples.append(decoded)
                 
                 # Check audio quality
@@ -399,7 +470,18 @@ class SpeakerAuthentication(BaseTool):
                 if features is None or len(features) == 0:
                     return ToolResult(ToolStatus.ERROR, error="Could not extract voice features")
                 
-                # Compare against all profiles
+                # FIRST: Check against negative speakers (voices to reject)
+                if self.negative_speakers:
+                    neg_check = await self._check_against_negatives(features)
+                    if neg_check:
+                        neg_speaker_id, neg_confidence = neg_check
+                        neg_profile = self.negative_speakers[neg_speaker_id]
+                        logging.warning(f"🚫 Rejected negative speaker match: {neg_profile.name} (confidence: {neg_confidence:.2%})")
+                        return ToolResult(ToolStatus.ERROR, 
+                            error=f"Speaker rejected: {neg_profile.name}. This voice is blocked.",
+                            data={"rejected_speaker": neg_profile.name, "confidence": neg_confidence})
+                
+                # Compare against all positive profiles
                 best_match = None
                 best_confidence = 0.0
                 
@@ -613,6 +695,223 @@ class SpeakerAuthentication(BaseTool):
                 },
                 message=f"Information for '{profile.name}'")
     
+    async def _enroll_negative_speaker(self, speaker_name: str, audio_samples: List[Any], 
+                                       reason: str = "Blocked voice", **kwargs) -> ToolResult:
+        """Enroll a negative speaker (voice to reject/block)
+        
+        Args:
+            speaker_name: Name of speaker to block
+            audio_samples: List of audio data as bytes or base64 strings
+            reason: Reason for blocking (e.g., "Assistant's own voice", "Spam caller")
+            
+        Returns:
+            ToolResult with enrollment status and speaker_id
+        """
+        async with self._lock:
+            try:
+                if not audio_samples:
+                    return ToolResult(ToolStatus.ERROR, error="No audio samples provided")
+                
+                if len(audio_samples) < self._min_audio_samples:
+                    return ToolResult(ToolStatus.ERROR, 
+                        error=f"Need at least {self._min_audio_samples} samples, got {len(audio_samples)}")
+                
+                # Decode audio samples if they are base64 strings
+                decoded_samples = []
+                for sample in audio_samples:
+                    decoded = await self._decode_audio_sample(sample)
+                    if decoded is None:
+                        return ToolResult(ToolStatus.ERROR, error="Invalid audio sample format")
+                    decoded_samples.append(decoded)
+                
+                # Check audio quality
+                quality_results = []
+                for sample in decoded_samples:
+                    quality = await self._check_audio_quality(sample)
+                    quality_results.append(quality)
+                
+                avg_quality = np.mean(quality_results)
+                if avg_quality < 0.5:
+                    return ToolResult(ToolStatus.ERROR, 
+                        error=f"Audio quality too low: {avg_quality:.2f}/1.0. Please retake samples in quieter environment")
+                
+                # Extract features from samples
+                all_features = []
+                for sample in decoded_samples:
+                    features = await self._extract_features(sample)
+                    if features is not None:
+                        all_features.extend(features)
+                
+                if not all_features:
+                    return ToolResult(ToolStatus.ERROR, error="Could not extract features from audio samples")
+                
+                # Create negative speaker profile
+                neg_speaker_id = f"negative_speaker_{len(self.negative_speakers) + 1}"
+                profile = SpeakerProfile(
+                    speaker_id=neg_speaker_id,
+                    name=speaker_name,
+                    created_at=datetime.now().isoformat(),
+                    updated_at=datetime.now().isoformat(),
+                    samples_count=len(decoded_samples),
+                    is_owner=False,
+                    features=all_features,
+                    metadata={
+                        "enrollment_quality": float(avg_quality),
+                        "reason": reason,
+                        "blocked": True
+                    }
+                )
+                
+                self.negative_speakers[neg_speaker_id] = profile
+                
+                # Save to database
+                if self._db_manager:
+                    await self._save_negative_speaker_to_db(profile, reason)
+                
+                # Save to JSON
+                await self._save_negative_speakers_to_file()
+                
+                logging.info(f"🚫 Enrolled negative speaker '{speaker_name}' ({neg_speaker_id}) - Reason: {reason}")
+                
+                return ToolResult(ToolStatus.SUCCESS, 
+                    data={
+                        "speaker_id": neg_speaker_id,
+                        "speaker_name": speaker_name,
+                        "samples_recorded": len(decoded_samples),
+                        "audio_quality": float(avg_quality),
+                        "reason": reason
+                    },
+                    message=f"Successfully blocked '{speaker_name}' - {reason}")
+                
+            except Exception as e:
+                logging.error(f"Negative speaker enrollment failed: {e}")
+                return ToolResult(ToolStatus.ERROR, error=str(e))
+    
+    async def _validate_against_negatives(self, audio_sample: Any, **kwargs) -> ToolResult:
+        """Validate audio against negative speakers only
+        
+        Args:
+            audio_sample: Audio data as bytes or base64 string
+            
+        Returns:
+            ToolResult indicating if voice matches any blocked speakers
+        """
+        async with self._lock:
+            try:
+                if not self.negative_speakers:
+                    return ToolResult(ToolStatus.SUCCESS,
+                        data={"matches_negative": False},
+                        message="No negative speakers enrolled")
+                
+                audio_bytes = await self._decode_audio_sample(audio_sample)
+                if not audio_bytes:
+                    return ToolResult(ToolStatus.ERROR, error="No valid audio sample provided")
+                
+                # Extract features
+                features = await self._extract_features(audio_bytes)
+                if features is None or len(features) == 0:
+                    return ToolResult(ToolStatus.ERROR, error="Could not extract voice features")
+                
+                # Check against negative speakers
+                neg_check = await self._check_against_negatives(features)
+                
+                if neg_check:
+                    neg_speaker_id, neg_confidence = neg_check
+                    neg_profile = self.negative_speakers[neg_speaker_id]
+                    
+                    return ToolResult(ToolStatus.SUCCESS,
+                        data={
+                            "matches_negative": True,
+                            "blocked_speaker": neg_profile.name,
+                            "speaker_id": neg_speaker_id,
+                            "confidence": neg_confidence,
+                            "reason": neg_profile.metadata.get("reason", "Unknown")
+                        },
+                        message=f"Voice matches blocked speaker '{neg_profile.name}' ({neg_confidence:.2%} confidence)")
+                else:
+                    return ToolResult(ToolStatus.SUCCESS,
+                        data={"matches_negative": False},
+                        message="Voice does not match any blocked speakers")
+                
+            except Exception as e:
+                logging.error(f"Negative validation error: {e}")
+                return ToolResult(ToolStatus.ERROR, error=str(e))
+    
+    async def _list_negative_speakers(self) -> ToolResult:
+        """List all blocked negative speakers"""
+        async with self._lock:
+            try:
+                speakers_list = [
+                    {
+                        "speaker_id": p.speaker_id,
+                        "name": p.name,
+                        "samples_count": p.samples_count,
+                        "created_at": p.created_at,
+                        "reason": p.metadata.get("reason", "Unknown"),
+                        "rejection_threshold": p.confidence_threshold
+                    }
+                    for p in self.negative_speakers.values()
+                ]
+                
+                return ToolResult(ToolStatus.SUCCESS,
+                    data={"negative_speakers": speakers_list, "total": len(speakers_list)},
+                    message=f"Found {len(speakers_list)} blocked speaker(s)")
+            except Exception as e:
+                return ToolResult(ToolStatus.ERROR, error=str(e))
+    
+    async def _remove_negative_speaker(self, speaker_id: str, **kwargs) -> ToolResult:
+        """Remove a negative speaker from blocklist
+        
+        Args:
+            speaker_id: ID of negative speaker to remove
+            
+        Returns:
+            ToolResult indicating success or failure
+        """
+        async with self._lock:
+            try:
+                if speaker_id not in self.negative_speakers:
+                    return ToolResult(ToolStatus.ERROR, error=f"Negative speaker '{speaker_id}' not found")
+                
+                profile = self.negative_speakers.pop(speaker_id)
+                
+                # Remove from database
+                if self._db_manager:
+                    await self._db_manager.execute_raw(
+                        'DELETE FROM negative_speakers WHERE speaker_id = ?', (speaker_id,))
+                
+                # Save updated profiles
+                await self._save_negative_speakers_to_file()
+                
+                logging.info(f"🗑️ Removed negative speaker: {profile.name}")
+                
+                return ToolResult(ToolStatus.SUCCESS, 
+                    data={"removed_speaker": profile.name},
+                    message=f"Unblocked '{profile.name}'")
+            except Exception as e:
+                return ToolResult(ToolStatus.ERROR, error=str(e))
+    
+    async def _get_negative_speaker_info(self, speaker_id: str, **kwargs) -> ToolResult:
+        """Get information about a blocked negative speaker"""
+        async with self._lock:
+            if speaker_id not in self.negative_speakers:
+                return ToolResult(ToolStatus.ERROR, error=f"Negative speaker '{speaker_id}' not found")
+            
+            profile = self.negative_speakers[speaker_id]
+            
+            return ToolResult(ToolStatus.SUCCESS,
+                data={
+                    "speaker_id": speaker_id,
+                    "name": profile.name,
+                    "samples_count": profile.samples_count,
+                    "rejection_threshold": profile.confidence_threshold,
+                    "created_at": profile.created_at,
+                    "updated_at": profile.updated_at,
+                    "reason": profile.metadata.get("reason", "Unknown"),
+                    "metadata": profile.metadata
+                },
+                message=f"Information for blocked speaker '{profile.name}'")
+    
     # Feature extraction and comparison
     
     async def _extract_features(self, audio_sample: bytes) -> Optional[List[float]]:
@@ -781,6 +1080,89 @@ class SpeakerAuthentication(BaseTool):
         except Exception as e:
             logging.warning(f"Could not log authentication: {e}")
     
+    async def _check_against_negatives(self, features: List[float]) -> Optional[tuple]:
+        """Check if audio features match any negative speakers
+        
+        Args:
+            features: Voice features to check
+            
+        Returns:
+            Tuple of (speaker_id, confidence) if match found, None otherwise
+        """
+        try:
+            best_negative_match = None
+            best_negative_confidence = 0.0
+            
+            for speaker_id, profile in self.negative_speakers.items():
+                if not profile.features:
+                    continue
+                
+                confidence = await self._compare_features(features, profile.features)
+                threshold = profile.confidence_threshold
+                
+                # If confidence exceeds rejection threshold, mark as match
+                if confidence >= threshold and confidence > best_negative_confidence:
+                    best_negative_confidence = confidence
+                    best_negative_match = (speaker_id, confidence)
+            
+            return best_negative_match
+            
+        except Exception as e:
+            logging.warning(f"Negative speaker check error: {e}")
+            return None
+    
+    async def _save_negative_speaker_to_db(self, profile: SpeakerProfile, reason: str):
+        """Save negative speaker profile to database
+        
+        Args:
+            profile: SpeakerProfile to save
+            reason: Reason for blocking
+        """
+        if not self._db_manager:
+            return
+        
+        try:
+            await self._db_manager.execute_raw('''
+                INSERT OR REPLACE INTO negative_speakers 
+                (speaker_id, name, rejection_threshold, samples_count, updated_at, reason, metadata)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            ''', (
+                profile.speaker_id,
+                profile.name,
+                profile.confidence_threshold,
+                profile.samples_count,
+                datetime.now().isoformat(),
+                reason,
+                json.dumps(profile.metadata)
+            ))
+        except Exception as e:
+            logging.warning(f"Could not save negative speaker to DB: {e}")
+    
+    async def _save_negative_speakers_to_file(self):
+        """Save all negative speakers to JSON file for portability"""
+        try:
+            neg_data = {}
+            
+            for speaker_id, profile in self.negative_speakers.items():
+                neg_data[speaker_id] = {
+                    "speaker_id": profile.speaker_id,
+                    "name": profile.name,
+                    "created_at": profile.created_at,
+                    "updated_at": profile.updated_at,
+                    "confidence_threshold": profile.confidence_threshold,
+                    "samples_count": profile.samples_count,
+                    "is_owner": profile.is_owner,
+                    "features": profile.features,
+                    "metadata": profile.metadata
+                }
+            
+            async with aiofiles.open("negative_speakers.json", 'w') as f:
+                await f.write(json.dumps(neg_data, indent=2))
+            
+            logging.info("💾 Negative speakers saved to JSON")
+        except Exception as e:
+            logging.warning(f"Could not save negative speakers to JSON: {e}")
+    
     async def _save_profiles_to_file(self):
         """Save all profiles to JSON file for portability"""
         try:
@@ -826,22 +1208,27 @@ class SpeakerAuthentication(BaseTool):
                         "set_current_speaker",
                         "get_current_speaker",
                         "verify_audio_quality",
-                        "get_speaker_info"
+                        "get_speaker_info",
+                        "enroll_negative",
+                        "validate_against_negatives",
+                        "list_negative_speakers",
+                        "remove_negative_speaker",
+                        "get_negative_speaker_info"
                     ],
                     "description": "Action to perform"
                 },
                 "speaker_name": {
                     "type": "string",
-                    "description": "Name of speaker (for enroll)"
+                    "description": "Name of speaker (for enroll, enroll_negative)"
                 },
                 "audio_samples": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "List of base64-encoded audio samples (for enroll)"
+                    "description": "List of base64-encoded audio samples (for enroll, enroll_negative)"
                 },
                 "audio_sample": {
                     "type": "string",
-                    "description": "Base64-encoded audio sample (for authenticate, verify_audio_quality)"
+                    "description": "Base64-encoded audio sample (for authenticate, verify_audio_quality, validate_against_negatives)"
                 },
                 "is_owner": {
                     "type": "boolean",
@@ -854,7 +1241,11 @@ class SpeakerAuthentication(BaseTool):
                 },
                 "speaker_id": {
                     "type": "string",
-                    "description": "Speaker ID (for remove_profile, set_current_speaker, get_speaker_info)"
+                    "description": "Speaker ID (for remove_profile, set_current_speaker, get_speaker_info, remove_negative_speaker, get_negative_speaker_info)"
+                },
+                "reason": {
+                    "type": "string",
+                    "description": "Reason for blocking negative speaker (for enroll_negative)"
                 }
             },
             "required": ["action"]
