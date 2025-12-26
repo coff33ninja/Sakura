@@ -13,6 +13,10 @@ echo   🌸 Sakura AI - Launcher
 echo  ========================================
 echo.
 
+
+:: Check if uv is installed
+
+:main_flow
 :: Check if uv is installed
 where uv >nul 2>&1
 if %errorlevel% neq 0 (
@@ -192,15 +196,64 @@ echo [INFO] Environment ready:
 !VENV_DIR!\Scripts\python.exe --version
 echo.
 
-:: Launch Sakura
+:: Present launch menu (now that venv is ready)
+:run_menu
+echo.
+echo =============================
+echo Ready to launch. Choose mode:
+echo  1) Run as current user (normal)
+echo  2) Run as Admin (UAC) - only launches the app elevated
+echo  Q) Quit
+set /p launchChoice=Enter choice [1/2/Q]: 
+if /i "%launchChoice%"=="1" goto launch_normal
+if /i "%launchChoice%"=="2" goto launch_admin
+if /i "%launchChoice%"=="Q" goto :eof
+echo Invalid choice.
+goto run_menu
+
+:launch_normal
 echo  ========================================
-echo   🌸 Starting Sakura AI...
+echo   🌸 Starting Sakura AI (normal user)
 echo  ========================================
 echo.
+:: Launch detached in a new window and exit launcher
+start "" "%CD%\%VENV_DIR%\Scripts\python.exe" "%CD%\main.py"
+goto :eof
 
-!VENV_DIR!\Scripts\python.exe main.py
+:launch_admin
+echo  ========================================
+echo   🌸 Starting Sakura AI (elevated)
+echo  ========================================
+echo.
+:: Build absolute paths and helper file names
+set "REPO=%CD%"
+set "PYEX=%REPO%\%VENV_DIR%\Scripts\python.exe"
+set "MAINPY=%REPO%\main.py"
+set "ADMIN_BATCH=%temp%\sakura_admin_run.bat"
+set "ADMIN_VBS=%temp%\sakura_admin_run.vbs"
 
-:: If script exits, pause to see any errors
+> "%ADMIN_BATCH%" echo @echo off
+>> "%ADMIN_BATCH%" echo cd /d "%REPO%"
+>> "%ADMIN_BATCH%" echo %SystemRoot%\System32\rundll32.exe shell32.dll,SHCreateLocalServerRunDll {c82192ee-6cb5-4bc0-9ef0-fb818773790a}
+>> "%ADMIN_BATCH%" echo MD "%%USERPROFILE%%\AppData\Local\Temp\AIO" 2^>nul
+>> "%ADMIN_BATCH%" echo echo. ^> "%%USERPROFILE%%\AppData\Local\Temp\AIO\log.txt"
+>> "%ADMIN_BATCH%" echo "%PYEX%" "%MAINPY%"
+>> "%ADMIN_BATCH%" echo exit
+
+> "%ADMIN_VBS%" echo Set UAC = CreateObject("Shell.Application")
+>> "%ADMIN_VBS%" echo UAC.ShellExecute "%ADMIN_BATCH%", "", "", "runas", 1
+
+:: Invoke the VBScript to launch the admin batch elevated
+cscript //nologo "%ADMIN_VBS%"
+
+:: Give the elevated proc a moment to start, then remove temp files (best-effort)
+timeout /t 3 >nul
+del "%ADMIN_VBS%" 2>nul
+del "%ADMIN_BATCH%" 2>nul
+
+goto :eof
+
+:after_run
 echo.
 echo [INFO] Sakura has stopped.
-pause
+goto :eof
