@@ -120,7 +120,10 @@ class APIKeyManager:
         try:
             async with aiofiles.open(self.keys_file, 'r') as f:
                 content = await f.read()
-                data = json.loads(content)
+                if not content.strip():
+                    data = {}
+                else:
+                    data = json.loads(content)
                 
             for key_data in data.get('keys', []):
                 api_key = APIKey.from_dict(key_data)

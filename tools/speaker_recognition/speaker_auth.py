@@ -17,6 +17,7 @@ from datetime import datetime
 from enum import Enum
 import json
 import aiofiles
+import base64
 from pathlib import Path
 
 try:
@@ -138,16 +139,35 @@ class SpeakerAuthentication(BaseTool):
             logging.error(f"❌ Speaker Recognition initialization failed: {e}")
             return False
     
+    async def _decode_audio_sample(self, audio_sample: Any) -> Optional[bytes]:
+        """Decode audio sample from base64 string to bytes
+        
+        Handles both raw bytes and base64-encoded strings.
+        
+        Args:
+            audio_sample: Audio data as bytes or base64 string
+            
+        Returns:
+            Decoded audio bytes or None if decoding failed
+        """
+        if isinstance(audio_sample, bytes):
+            return audio_sample
+        if isinstance(audio_sample, str):
+            try:
+                return base64.b64decode(audio_sample)
+            except Exception as e:
+                logging.warning(f"Failed to decode base64 audio: {e}")
+                return None
+        return None
+    
     async def _create_schema(self):
         """Create database tables for speaker profiles"""
         if not self._db_manager:
             return
         
         try:
-            cursor = await self._db_manager.cursor()
-            
             # Speaker profiles table
-            await cursor.execute('''
+            await self._db_manager.execute_raw('''
                 CREATE TABLE IF NOT EXISTS speaker_profiles (
                     speaker_id TEXT PRIMARY KEY,
                     name TEXT NOT NULL,
@@ -161,7 +181,7 @@ class SpeakerAuthentication(BaseTool):
             ''')
             
             # Speaker audio samples table
-            await cursor.execute('''
+            await self._db_manager.execute_raw('''
                 CREATE TABLE IF NOT EXISTS speaker_samples (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     speaker_id TEXT REFERENCES speaker_profiles(speaker_id) ON DELETE CASCADE,
@@ -175,7 +195,7 @@ class SpeakerAuthentication(BaseTool):
             ''')
             
             # Authentication log
-            await cursor.execute('''
+            await self._db_manager.execute_raw('''
                 CREATE TABLE IF NOT EXISTS authentication_log (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     speaker_id TEXT,
@@ -185,7 +205,6 @@ class SpeakerAuthentication(BaseTool):
                 )
             ''')
             
-            await self._db_manager.commit()
             logging.info("📊 Speaker recognition schema created")
         except Exception as e:
             logging.error(f"Failed to create schema: {e}")
@@ -196,9 +215,7 @@ class SpeakerAuthentication(BaseTool):
             return
         
         try:
-            cursor = await self._db_manager.cursor()
-            await cursor.execute('SELECT * FROM speaker_profiles')
-            rows = await cursor.fetchall()
+            rows = await self._db_manager.execute_raw('SELECT * FROM speaker_profiles')
             
             for row in rows:
                 profile = SpeakerProfile(
@@ -264,9 +281,18 @@ class SpeakerAuthentication(BaseTool):
             logging.error(f"Speaker recognition error: {e}")
             return ToolResult(ToolStatus.ERROR, error=str(e))
     
-    async def _enroll_speaker(self, speaker_name: str, audio_samples: List[bytes], 
+    async def _enroll_speaker(self, speaker_name: str, audio_samples: List[Any], 
                              is_owner: bool = False, **kwargs) -> ToolResult:
-        """Enroll a new speaker with voice samples"""
+        """Enroll a new speaker with voice samples
+        
+        Args:
+            speaker_name: Name of speaker to enroll
+            audio_samples: List of audio data as bytes or base64 strings
+            is_owner: Whether this is the owner account
+            
+        Returns:
+            ToolResult with enrollment status and speaker_id
+        """
         async with self._lock:
             try:
                 if not audio_samples:
@@ -276,9 +302,17 @@ class SpeakerAuthentication(BaseTool):
                     return ToolResult(ToolStatus.ERROR, 
                         error=f"Need at least {self._min_audio_samples} samples, got {len(audio_samples)}")
                 
+                # Decode audio samples if they are base64 strings
+                decoded_samples = []
+                for sample in audio_samples:
+                    decoded = await self._decode_audio_sample(sample)
+                    if decoded is None:
+                        return ToolResult(ToolStatus.ERROR, error=f"Invalid audio sample format")
+                    decoded_samples.append(decoded)
+                
                 # Check audio quality
                 quality_results = []
-                for sample in audio_samples:
+                for sample in decoded_samples:
                     quality = await self._check_audio_quality(sample)
                     quality_results.append(quality)
                 
@@ -289,7 +323,7 @@ class SpeakerAuthentication(BaseTool):
                 
                 # Extract features from samples
                 all_features = []
-                for sample in audio_samples:
+                for sample in decoded_samples:
                     features = await self._extract_features(sample)
                     if features is not None:
                         all_features.extend(features)
@@ -304,7 +338,7 @@ class SpeakerAuthentication(BaseTool):
                     name=speaker_name,
                     created_at=datetime.now().isoformat(),
                     updated_at=datetime.now().isoformat(),
-                    samples_count=len(audio_samples),
+                    samples_count=len(decoded_samples),
                     is_owner=is_owner,
                     features=all_features,
                     metadata={"enrollment_quality": float(avg_quality)}
@@ -325,34 +359,43 @@ class SpeakerAuthentication(BaseTool):
                     data={
                         "speaker_id": speaker_id,
                         "speaker_name": speaker_name,
-                        "samples_recorded": len(audio_samples),
+                        "samples_recorded": len(decoded_samples),
                         "audio_quality": float(avg_quality),
                         "is_owner": is_owner
                     },
-                    message=f"Successfully enrolled '{speaker_name}' with {len(audio_samples)} voice samples")
+                    message=f"Successfully enrolled '{speaker_name}' with {len(decoded_samples)} voice samples")
                 
             except Exception as e:
                 logging.error(f"Enrollment failed: {e}")
                 return ToolResult(ToolStatus.ERROR, error=str(e))
     
-    async def _authenticate_speaker(self, audio_sample: bytes, **kwargs) -> ToolResult:
-        """Authenticate if audio is from enrolled speaker"""
+    async def _authenticate_speaker(self, audio_sample: Any, **kwargs) -> ToolResult:
+        """Authenticate if audio is from enrolled speaker
+        
+        Args:
+            audio_sample: Audio data as bytes or base64 string
+            
+        Returns:
+            ToolResult with authentication result and confidence
+        """
         async with self._lock:
             try:
-                if not audio_sample:
-                    return ToolResult(ToolStatus.ERROR, error="No audio sample provided")
+                # Decode audio sample if it's a string
+                audio_bytes = await self._decode_audio_sample(audio_sample)
+                if not audio_bytes:
+                    return ToolResult(ToolStatus.ERROR, error="No valid audio sample provided")
                 
                 if not self.profiles:
                     return ToolResult(ToolStatus.ERROR, error="No speaker profiles enrolled")
                 
                 # Check audio quality
-                quality = await self._check_audio_quality(audio_sample)
+                quality = await self._check_audio_quality(audio_bytes)
                 if quality < 0.4:
                     return ToolResult(ToolStatus.ERROR, 
                         error=f"Audio quality too low ({quality:.2f}). Cannot authenticate reliably")
                 
                 # Extract features
-                features = await self._extract_features(audio_sample)
+                features = await self._extract_features(audio_bytes)
                 if features is None or len(features) == 0:
                     return ToolResult(ToolStatus.ERROR, error="Could not extract voice features")
                 
@@ -428,7 +471,14 @@ class SpeakerAuthentication(BaseTool):
                 return ToolResult(ToolStatus.ERROR, error=str(e))
     
     async def _remove_profile(self, speaker_id: str, **kwargs) -> ToolResult:
-        """Remove a speaker profile"""
+        """Remove a speaker profile
+        
+        Args:
+            speaker_id: ID of speaker to remove
+            
+        Returns:
+            ToolResult indicating success or failure
+        """
         async with self._lock:
             try:
                 if speaker_id not in self.profiles:
@@ -438,9 +488,8 @@ class SpeakerAuthentication(BaseTool):
                 
                 # Remove from database
                 if self._db_manager:
-                    cursor = await self._db_manager.cursor()
-                    await cursor.execute('DELETE FROM speaker_profiles WHERE speaker_id = ?', (speaker_id,))
-                    await self._db_manager.commit()
+                    await self._db_manager.execute_raw(
+                        'DELETE FROM speaker_profiles WHERE speaker_id = ?', (speaker_id,))
                 
                 # Save updated profiles
                 await self._save_profiles_to_file()
@@ -511,10 +560,22 @@ class SpeakerAuthentication(BaseTool):
                 },
                 message=f"Current speaker: {profile.name}")
     
-    async def _verify_audio_quality(self, audio_sample: bytes, **kwargs) -> ToolResult:
-        """Verify audio quality for speaker recognition"""
+    async def _verify_audio_quality(self, audio_sample: Any, **kwargs) -> ToolResult:
+        """Verify audio quality for speaker recognition
+        
+        Args:
+            audio_sample: Audio data as bytes or base64 string
+            
+        Returns:
+            ToolResult with quality score and rating
+        """
         try:
-            quality = await self._check_audio_quality(audio_sample)
+            # Decode audio sample if it's a string
+            audio_bytes = await self._decode_audio_sample(audio_sample)
+            if audio_bytes is None:
+                return ToolResult(ToolStatus.ERROR, error="Invalid audio sample format")
+            
+            quality = await self._check_audio_quality(audio_bytes)
             
             if quality >= 0.8:
                 rating = "Excellent"
@@ -676,14 +737,16 @@ class SpeakerAuthentication(BaseTool):
             return 0.5
     
     async def _save_profile_to_db(self, profile: SpeakerProfile):
-        """Save speaker profile to database"""
+        """Save speaker profile to database
+        
+        Args:
+            profile: SpeakerProfile to save
+        """
         if not self._db_manager:
             return
         
         try:
-            cursor = await self._db_manager.cursor()
-            
-            await cursor.execute('''
+            await self._db_manager.execute_raw('''
                 INSERT OR REPLACE INTO speaker_profiles 
                 (speaker_id, name, is_owner, confidence_threshold, samples_count, updated_at, metadata)
                 VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -696,25 +759,25 @@ class SpeakerAuthentication(BaseTool):
                 datetime.now().isoformat(),
                 json.dumps(profile.metadata)
             ))
-            
-            await self._db_manager.commit()
         except Exception as e:
             logging.warning(f"Could not save profile to DB: {e}")
     
     async def _log_authentication(self, speaker_id: str, authenticated: bool, confidence: float):
-        """Log authentication attempt"""
+        """Log authentication attempt
+        
+        Args:
+            speaker_id: ID of authenticated speaker
+            authenticated: Whether authentication succeeded
+            confidence: Confidence score
+        """
         if not self._db_manager:
             return
         
         try:
-            cursor = await self._db_manager.cursor()
-            
-            await cursor.execute('''
+            await self._db_manager.execute_raw('''
                 INSERT INTO authentication_log (speaker_id, authenticated, confidence)
                 VALUES (?, ?, ?)
             ''', (speaker_id, authenticated, confidence))
-            
-            await self._db_manager.commit()
         except Exception as e:
             logging.warning(f"Could not log authentication: {e}")
     
@@ -746,9 +809,12 @@ class SpeakerAuthentication(BaseTool):
     def get_schema(self) -> Dict[str, Any]:
         """Return the tool's parameter schema for Gemini function calling"""
         return {
-            "type": "object",
-            "properties": {
-                "action": {
+            "name": self.name,
+            "description": self.description,
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "action": {
                     "type": "string",
                     "enum": [
                         "enroll",
@@ -792,4 +858,5 @@ class SpeakerAuthentication(BaseTool):
                 }
             },
             "required": ["action"]
+        }
         }

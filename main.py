@@ -16,8 +16,10 @@ from modules import (
     AppConfig, AsyncConfigLoader, AudioManager, WakeWordDetector, 
     SessionManager, GeminiVoiceClient, get_current_persona, CURRENT_PERSONALITY,
     TaskChain, ErrorRecovery, UserPreferences, SuggestionEngine, IntentParser,
-    BackgroundTaskManager, initialize_from_config, initialize_personas
+    BackgroundTaskManager, initialize_from_config, initialize_personas,
+    APIKeyManager  # Import APIKeyManager
 )
+
 from modules.conversation_context import ConversationContext
 from modules.persona import get_wake_responses
 from tools import create_tool_registry, ToolRegistry
@@ -42,6 +44,7 @@ class AIGirlfriend:
         self.suggestion_engine: SuggestionEngine = None
         self.intent_parser: IntentParser = None
         self.background_task_manager: BackgroundTaskManager = None
+        self.key_manager: APIKeyManager = APIKeyManager() # Initialize APIKeyManager
         self.running = False
         self.audio_out_queue = None  # Queue for audio playback
         self._tasks = []  # Background tasks
