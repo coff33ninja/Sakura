@@ -202,8 +202,15 @@ class GeminiVoiceClient:
                         yield response_data
                     
         except Exception as e:
-            logging.error(f"Error receiving responses: {e}")
-            await self._handle_api_error(e)
+            error_str = str(e).lower()
+            # Only log and handle errors if not in cooldown
+            if self._circuit_open_until and datetime.now() < self._circuit_open_until:
+                logging.debug(f"Circuit breaker active, suppressing error: {e}")
+            else:
+                logging.error(f"Error receiving responses: {e}")
+                await self._handle_api_error(e)
+            # Don't immediately yield or continue - let circuit breaker apply backoff
+            await asyncio.sleep(0.5)
     async def send_function_response(self, function_call_id: str, function_name: str, result: str):
         """Send function/tool call response back to Gemini Live API"""
         if not self.is_connected or not self.session:
@@ -466,6 +473,11 @@ class GeminiVoiceClient:
             "403", "401", "invalid api key"
         ])
         
+        # Detect internal server errors (like 1011)
+        is_internal_error = any(term in error_msg for term in [
+            "1011", "internal error", "500", "internal server error"
+        ])
+        
         if is_rate_limited:
             logging.warning(f"🚫 Rate limit during operation on key {self.current_key.name}")
             await self.key_manager.handle_rate_limit(self.current_key)
@@ -491,8 +503,20 @@ class GeminiVoiceClient:
             next_key = await self.key_manager.rotate_key()
             if next_key and next_key != self.current_key:
                 await self._reconnect_with_new_key(next_key)
+        elif is_internal_error:
+            # For internal errors, count them and open circuit if too many
+            self._consecutive_errors += 1
+            logging.warning(f"Internal error on key {self.current_key.name} (count: {self._consecutive_errors})")
+            if self._consecutive_errors >= 3:  # Lower threshold for internal errors
+                self._circuit_open_until = datetime.now() + timedelta(seconds=30)
+                logging.error(f"⚠️  Circuit opened for 30s due to repeated internal errors ({self._consecutive_errors})")
+                await asyncio.sleep(5)  # Immediate backoff for internal errors
         else:
+            self._consecutive_errors += 1
             await self.key_manager.mark_key_used(self.current_key, success=False)
+            if self._consecutive_errors >= self._max_consecutive_errors:
+                self._circuit_open_until = datetime.now() + timedelta(seconds=30)
+                logging.warning(f"Circuit opened due to error accumulation ({self._consecutive_errors})")
     
     async def _reconnect_with_new_key(self, new_key):
         """Reconnect with a new API key"""

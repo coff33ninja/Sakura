@@ -451,6 +451,15 @@ class SpeakerAuthentication(BaseTool):
         """
         async with self._lock:
             try:
+                # CRITICAL: Skip authentication if system is currently speaking
+                # This prevents the AI from rejecting itself via the negative speaker check
+                is_system_speaking = kwargs.get('_is_speaking', False)
+                if is_system_speaking:
+                    logging.debug("Skipping speaker authentication - system is speaking")
+                    return ToolResult(ToolStatus.SUCCESS, 
+                        data={"authenticated": True, "reason": "Skipped during system speech"},
+                        message="Authentication bypassed (system speaking)")
+                
                 # Decode audio sample if it's a string
                 audio_bytes = await self._decode_audio_sample(audio_sample)
                 if not audio_bytes:
@@ -471,7 +480,8 @@ class SpeakerAuthentication(BaseTool):
                     return ToolResult(ToolStatus.ERROR, error="Could not extract voice features")
                 
                 # FIRST: Check against negative speakers (voices to reject)
-                if self.negative_speakers:
+                # SKIP if system is speaking to avoid self-rejection
+                if self.negative_speakers and not is_system_speaking:
                     neg_check = await self._check_against_negatives(features)
                     if neg_check:
                         neg_speaker_id, neg_confidence = neg_check

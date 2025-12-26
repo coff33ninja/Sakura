@@ -43,6 +43,7 @@ class AIGirlfriend:
         self.user_preferences: UserPreferences = None
         self.suggestion_engine: SuggestionEngine = None
         self.intent_parser: IntentParser = None
+        self.is_speaking = False  # Track when Sakura is actively speaking (don't auth during this)
         self.background_task_manager: BackgroundTaskManager = None
         self.key_manager: APIKeyManager = APIKeyManager() # Initialize APIKeyManager
         self.running = False
@@ -597,15 +598,23 @@ COMMON MCP SERVERS (run with windows run_command "uvx <server>"):
                         timeout=0.1
                     )
                     if audio_data:
-                        # Play in thread to not block async loop
-                        await asyncio.to_thread(
-                            self.audio_manager.play_audio, 
-                            audio_data
-                        )
+                        # Set speaking flag to prevent speaker auth during Sakura's speech
+                        self.is_speaking = True
+                        try:
+                            # Play in thread to not block async loop
+                            await asyncio.to_thread(
+                                self.audio_manager.play_audio, 
+                                audio_data
+                            )
+                        finally:
+                            # Clear speaking flag after a brief delay to account for audio latency
+                            await asyncio.sleep(0.5)
+                            self.is_speaking = False
                 except asyncio.TimeoutError:
                     continue
             except Exception as e:
                 logging.error(f"Error playing audio: {e}")
+                self.is_speaking = False  # Ensure flag is cleared on error
                 await asyncio.sleep(0.1)
     
     async def _handle_function_calls(self, function_calls):
@@ -697,6 +706,10 @@ COMMON MCP SERVERS (run with windows run_command "uvx <server>"):
             # Execute tool via registry (normal synchronous execution)
             import time
             start_time = time.time()
+            
+            # Add system state to tool args (for speaker auth and other state-aware tools)
+            tool_args['_is_speaking'] = self.is_speaking
+            
             result = await self.tool_registry.execute_tool(tool_name, **tool_args)
             duration_ms = int((time.time() - start_time) * 1000)
             
