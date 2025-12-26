@@ -1,11 +1,12 @@
 """
 Developer Tools for Sakura
-Git operations, code execution, package management, SSH connections
+Git operations, code execution, package management, SSH/SMB/FTP/RDP connections
 
 Rules followed:
 - All imports MUST be used
 - Async with asyncio.Lock() for thread safety
 - aiofiles for file I/O
+- Database for connection profiles (FTS search, history)
 """
 import asyncio
 import logging
@@ -13,12 +14,28 @@ import os
 import subprocess
 import shutil
 from typing import Dict, Any, Optional, List
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, field, asdict
 from datetime import datetime
 from pathlib import Path
 import json
 import aiofiles
 from ..base import BaseTool, ToolResult, ToolStatus
+
+# Database import for connection profiles
+try:
+    from modules.database import DatabaseManager
+    HAS_DATABASE = True
+except ImportError:
+    HAS_DATABASE = False
+    logging.warning("Database module not available - profiles will use JSON only")
+
+# Paramiko for SFTP support
+try:
+    import paramiko
+    HAS_PARAMIKO = True
+except ImportError:
+    HAS_PARAMIKO = False
+    logging.warning("paramiko not installed - SFTP features limited. Install with: pip install paramiko")
 
 
 # Get assistant name for data folder
@@ -26,8 +43,44 @@ ASSISTANT_NAME = os.getenv("ASSISTANT_NAME", "Sakura")
 
 
 @dataclass
+class ConnectionProfile:
+    """Universal connection profile for SSH, SMB, FTP, RDP, etc."""
+    id: str
+    profile_type: str  # ssh, smb, ftp, sftp, rdp
+    name: str
+    host: str
+    port: int = 0  # 0 = use default for type
+    username: str = ""
+    auth_type: str = "password"  # password, key, ntlm, kerberos
+    key_path: Optional[str] = None
+    domain: Optional[str] = None  # For SMB/RDP
+    share_path: Optional[str] = None  # For SMB
+    remote_path: Optional[str] = None  # Default remote directory
+    local_path: Optional[str] = None  # Default local directory
+    use_ssl: bool = False  # For FTP -> FTPS
+    passive_mode: bool = True  # For FTP
+    extra_config: Dict[str, Any] = field(default_factory=dict)
+    created_at: str = ""
+    last_used: Optional[str] = None
+    use_count: int = 0
+    
+    def get_default_port(self) -> int:
+        """Get default port for profile type"""
+        defaults = {
+            "ssh": 22,
+            "sftp": 22,
+            "ftp": 21,
+            "ftps": 990,
+            "smb": 445,
+            "rdp": 3389
+        }
+        return self.port if self.port > 0 else defaults.get(self.profile_type, 0)
+
+
+# Legacy dataclass for backward compatibility
+@dataclass
 class SSHConnection:
-    """SSH connection profile"""
+    """SSH connection profile (legacy, for migration)"""
     id: str
     name: str
     host: str
@@ -39,10 +92,10 @@ class SSHConnection:
 
 
 class DeveloperTools(BaseTool):
-    """Developer tools - Git, code execution, package management, SSH"""
+    """Developer tools - Git, code execution, package management, connections (SSH/SMB/FTP/RDP)"""
     
     name = "developer"
-    description = "Developer tools: Git operations (status, add, commit, push, pull, branch, log, diff), run code snippets (Python, JS, PowerShell, Batch), package management (pip, npm, winget), SSH connections."
+    description = "Developer tools: Git operations (status, add, commit, push, pull, branch, log, diff), run code snippets (Python, JS, PowerShell, Batch), package management (pip, npm, winget), connections (SSH, SMB shares, FTP/SFTP, RDP)."
     
     def __init__(self):
         self._lock = asyncio.Lock()
@@ -50,9 +103,17 @@ class DeveloperTools(BaseTool):
         self.data_dir: Path = Path.home() / "Documents" / ASSISTANT_NAME / "developer"
         self.data_dir.mkdir(parents=True, exist_ok=True)
         
-        # SSH profiles file
+        # Legacy SSH profiles file (for migration)
         self.ssh_profiles_file = self.data_dir / "ssh_profiles.json"
-        self.ssh_profiles: Dict[str, SSHConnection] = {}
+        self.ssh_profiles: Dict[str, SSHConnection] = {}  # Legacy, kept for migration
+        
+        # New unified connection profiles
+        self.profiles_file = self.data_dir / "connection_profiles.json"  # JSON backup
+        self.profiles: Dict[str, ConnectionProfile] = {}
+        
+        # Database for profiles
+        self._db: Optional[DatabaseManager] = None
+        self._db_available = False
         
         # Detect available tools
         self.available_tools: Dict[str, bool] = {}
@@ -61,11 +122,24 @@ class DeveloperTools(BaseTool):
     async def initialize(self) -> bool:
         """Initialize developer tools"""
         try:
+            # Initialize database for connection profiles
+            if HAS_DATABASE:
+                try:
+                    self._db = DatabaseManager()
+                    self._db_available = await self._db.initialize()
+                    if self._db_available:
+                        logging.info("Developer tools using database for connection profiles")
+                        # Migrate legacy SSH profiles to database
+                        await self._migrate_ssh_profiles_to_db()
+                except Exception as e:
+                    logging.warning(f"Database init failed, using JSON for profiles: {e}")
+                    self._db_available = False
+            
             # Detect available tools
             await self._detect_tools()
             
-            # Load SSH profiles
-            await self._load_ssh_profiles()
+            # Load profiles (from DB or JSON)
+            await self._load_profiles()
             
             available = [k for k, v in self.available_tools.items() if v]
             logging.info(f"Developer tools initialized. Available: {available}")
@@ -77,24 +151,41 @@ class DeveloperTools(BaseTool):
     async def _detect_tools(self):
         """Detect which developer tools are available on the system"""
         tools_to_check = {
+            # Core dev tools
             "git": ["git", "--version"],
             "python": ["python", "--version"],
             "node": ["node", "--version"],
             "npm": ["npm", "--version"],
             "pip": ["pip", "--version"],
             "winget": ["winget", "--version"],
+            # SSH tools
             "ssh": ["ssh", "-V"],
+            "putty": ["putty", "-help"],  # PuTTY GUI
+            "plink": ["plink", "-V"],  # PuTTY command-line
+            "pscp": ["pscp", "-V"],  # PuTTY SCP
+            # FTP tools
+            "winscp": ["winscp", "/help"],  # WinSCP
+            "ftp": ["ftp", "-?"] if self.is_windows else ["ftp", "--help"],
+            # RDP
+            "mstsc": ["mstsc", "/?"],  # Windows RDP client
+            # SMB/Network
+            "net": ["net", "help"],  # Windows net command
         }
         
         for tool, cmd in tools_to_check.items():
             try:
                 result = await asyncio.to_thread(
                     subprocess.run, cmd,
-                    capture_output=True, text=True, timeout=5
+                    capture_output=True, text=True, timeout=5,
+                    creationflags=subprocess.CREATE_NO_WINDOW if self.is_windows else 0
                 )
-                self.available_tools[tool] = result.returncode == 0
-            except Exception:
+                # Some tools return non-zero for help/version but still exist
+                self.available_tools[tool] = True
+            except FileNotFoundError:
                 self.available_tools[tool] = False
+            except Exception:
+                # Tool might exist but command failed - check with shutil.which
+                self.available_tools[tool] = shutil.which(tool) is not None
     
     async def execute(self, action: str, **kwargs) -> ToolResult:
         """Execute developer tool action"""
@@ -127,12 +218,30 @@ class DeveloperTools(BaseTool):
             "winget_install": self._winget_install,
             "winget_uninstall": self._winget_uninstall,
             "winget_list": self._winget_list,
-            # SSH
+            # Connection Profiles (unified)
+            "add_profile": self._add_profile,
+            "list_profiles": self._list_profiles,
+            "get_profile": self._get_profile,
+            "delete_profile": self._delete_profile,
+            "update_profile": self._update_profile,
+            # SSH (legacy actions kept for compatibility)
             "ssh_connect": self._ssh_connect,
             "ssh_run_command": self._ssh_run_command,
-            "ssh_add_profile": self._ssh_add_profile,
-            "ssh_list_profiles": self._ssh_list_profiles,
-            "ssh_delete_profile": self._ssh_delete_profile,
+            "ssh_add_profile": self._ssh_add_profile,  # Redirects to add_profile
+            "ssh_list_profiles": self._ssh_list_profiles,  # Redirects to list_profiles
+            "ssh_delete_profile": self._ssh_delete_profile,  # Redirects to delete_profile
+            # SMB/Network shares
+            "smb_connect": self._smb_connect,
+            "smb_map_drive": self._smb_map_drive,
+            "smb_unmap_drive": self._smb_unmap_drive,
+            "smb_list_shares": self._smb_list_shares,
+            # FTP/SFTP
+            "ftp_connect": self._ftp_connect,
+            "ftp_list": self._ftp_list,
+            "ftp_upload": self._ftp_upload,
+            "ftp_download": self._ftp_download,
+            # RDP
+            "rdp_connect": self._rdp_connect,
             # Utility
             "check_tools": self._check_tools,
             "find_tool_path": self._find_tool_path,
@@ -949,110 +1058,428 @@ class DeveloperTools(BaseTool):
             return ToolResult(status=ToolStatus.ERROR, error=str(e))
 
     
-    # ==================== SSH ====================
+    # ==================== CONNECTION PROFILES (Unified) ====================
     
-    async def _ssh_add_profile(self, name: str, host: str, username: str, port: int = 22,
-                               auth_type: str = "password", key_path: str = None, 
-                               **kwargs) -> ToolResult:
-        """Add an SSH connection profile"""
+    async def _add_profile(self, profile_type: str, name: str, host: str, 
+                           username: str = "", port: int = 0,
+                           auth_type: str = "password", key_path: str = None,
+                           domain: str = None, share_path: str = None,
+                           remote_path: str = None, local_path: str = None,
+                           use_ssl: bool = False, passive_mode: bool = True,
+                           extra_config: Dict = None, **kwargs) -> ToolResult:
+        """Add a connection profile (SSH, SMB, FTP, SFTP, RDP)
+        
+        Args:
+            profile_type: Type of connection - ssh, smb, ftp, sftp, rdp
+            name: User-friendly name for the profile
+            host: Hostname or IP address
+            username: Username for authentication
+            port: Port number (0 = use default for type)
+            auth_type: Authentication type - password, key, ntlm, kerberos
+            key_path: Path to SSH key or certificate
+            domain: Windows domain (for SMB/RDP)
+            share_path: SMB share path (e.g., 'SharedFolder')
+            remote_path: Default remote directory
+            local_path: Default local directory for transfers
+            use_ssl: Use SSL/TLS (for FTP -> FTPS)
+            passive_mode: Use passive mode (for FTP)
+            extra_config: Additional type-specific options as JSON
+        """
+        valid_types = ["ssh", "smb", "ftp", "sftp", "rdp"]
+        if profile_type not in valid_types:
+            return ToolResult(
+                status=ToolStatus.ERROR,
+                error=f"Invalid profile_type: {profile_type}. Valid: {valid_types}"
+            )
+        
         async with self._lock:
             self._counter += 1
-            profile_id = f"ssh_{self._counter}_{datetime.now().strftime('%H%M%S')}"
+            profile_id = f"{profile_type}_{self._counter}_{datetime.now().strftime('%H%M%S')}"
+            now = datetime.now().isoformat()
             
-            profile = SSHConnection(
+            profile = ConnectionProfile(
                 id=profile_id,
+                profile_type=profile_type,
                 name=name,
                 host=host,
                 port=port,
                 username=username,
                 auth_type=auth_type,
                 key_path=key_path,
-                created_at=datetime.now().isoformat()
+                domain=domain,
+                share_path=share_path,
+                remote_path=remote_path,
+                local_path=local_path,
+                use_ssl=use_ssl,
+                passive_mode=passive_mode,
+                extra_config=extra_config or {},
+                created_at=now
             )
             
-            self.ssh_profiles[profile_id] = profile
-            await self._save_ssh_profiles()
+            # Store in database if available
+            if self._db_available:
+                try:
+                    await self._db.insert("connection_profiles", {
+                        "profile_id": profile_id,
+                        "profile_type": profile_type,
+                        "name": name,
+                        "host": host,
+                        "port": port if port > 0 else None,
+                        "username": username,
+                        "auth_type": auth_type,
+                        "key_path": key_path,
+                        "domain": domain,
+                        "share_path": share_path,
+                        "remote_path": remote_path,
+                        "local_path": local_path,
+                        "use_ssl": 1 if use_ssl else 0,
+                        "passive_mode": 1 if passive_mode else 0,
+                        "extra_config": json.dumps(extra_config or {}),
+                        "created_at": now
+                    })
+                except Exception as e:
+                    logging.warning(f"Database insert failed for profile: {e}")
+            
+            # Keep in memory and save JSON backup
+            self.profiles[profile_id] = profile
+            await self._save_profiles()
+            
+            port_str = f":{profile.get_default_port()}" if profile.get_default_port() else ""
+            user_str = f"{username}@" if username else ""
             
             return ToolResult(
                 status=ToolStatus.SUCCESS,
-                data={"id": profile_id},
-                message=f"🔐 Added SSH profile: {name} ({username}@{host}:{port})"
+                data={"id": profile_id, "type": profile_type},
+                message=f"🔐 Added {profile_type.upper()} profile: {name} ({user_str}{host}{port_str})"
             )
     
-    async def _ssh_list_profiles(self, **kwargs) -> ToolResult:
-        """List saved SSH profiles"""
+    async def _list_profiles(self, profile_type: str = None, **kwargs) -> ToolResult:
+        """List saved connection profiles
+        
+        Args:
+            profile_type: Filter by type (ssh, smb, ftp, sftp, rdp) or None for all
+        """
         async with self._lock:
             profiles = []
-            for profile in self.ssh_profiles.values():
+            
+            # Try database first
+            if self._db_available:
+                try:
+                    where = "profile_type = ?" if profile_type else None
+                    params = (profile_type,) if profile_type else ()
+                    
+                    db_profiles = await self._db.select(
+                        "connection_profiles", "*", where, params,
+                        order_by="last_used DESC NULLS LAST, created_at DESC"
+                    )
+                    
+                    for row in db_profiles:
+                        profiles.append({
+                            "id": row["profile_id"],
+                            "type": row["profile_type"],
+                            "name": row["name"],
+                            "host": row["host"],
+                            "port": row["port"],
+                            "username": row["username"],
+                            "auth_type": row["auth_type"],
+                            "use_count": row["use_count"] or 0,
+                            "last_used": row["last_used"]
+                        })
+                    
+                    type_str = f" {profile_type.upper()}" if profile_type else ""
+                    return ToolResult(
+                        status=ToolStatus.SUCCESS,
+                        data=profiles,
+                        message=f"🔐 {len(profiles)}{type_str} profile(s)"
+                    )
+                except Exception as e:
+                    logging.warning(f"Database query failed: {e}")
+            
+            # Fallback to memory
+            for profile in self.profiles.values():
+                if profile_type and profile.profile_type != profile_type:
+                    continue
                 profiles.append({
                     "id": profile.id,
+                    "type": profile.profile_type,
                     "name": profile.name,
                     "host": profile.host,
-                    "port": profile.port,
+                    "port": profile.get_default_port(),
                     "username": profile.username,
-                    "auth_type": profile.auth_type
+                    "auth_type": profile.auth_type,
+                    "use_count": profile.use_count,
+                    "last_used": profile.last_used
                 })
             
+            type_str = f" {profile_type.upper()}" if profile_type else ""
             return ToolResult(
                 status=ToolStatus.SUCCESS,
                 data=profiles,
-                message=f"🔐 {len(profiles)} SSH profile(s)"
+                message=f"🔐 {len(profiles)}{type_str} profile(s)"
             )
     
-    async def _ssh_delete_profile(self, profile_id: str, **kwargs) -> ToolResult:
-        """Delete an SSH profile"""
+    async def _get_profile(self, profile_id: str, **kwargs) -> ToolResult:
+        """Get full details of a connection profile"""
         async with self._lock:
-            if profile_id not in self.ssh_profiles:
+            # Try database first
+            if self._db_available:
+                try:
+                    row = await self._db.select_one(
+                        "connection_profiles", "*", "profile_id = ?", (profile_id,)
+                    )
+                    if row:
+                        return ToolResult(
+                            status=ToolStatus.SUCCESS,
+                            data={
+                                "id": row["profile_id"],
+                                "type": row["profile_type"],
+                                "name": row["name"],
+                                "host": row["host"],
+                                "port": row["port"],
+                                "username": row["username"],
+                                "auth_type": row["auth_type"],
+                                "key_path": row["key_path"],
+                                "domain": row["domain"],
+                                "share_path": row["share_path"],
+                                "remote_path": row["remote_path"],
+                                "local_path": row["local_path"],
+                                "use_ssl": bool(row["use_ssl"]),
+                                "passive_mode": bool(row["passive_mode"]),
+                                "extra_config": json.loads(row["extra_config"]) if row["extra_config"] else {},
+                                "created_at": row["created_at"],
+                                "last_used": row["last_used"],
+                                "use_count": row["use_count"] or 0
+                            },
+                            message=f"🔐 Profile: {row['name']}"
+                        )
+                except Exception as e:
+                    logging.warning(f"Database query failed: {e}")
+            
+            # Fallback to memory
+            if profile_id not in self.profiles:
                 return ToolResult(status=ToolStatus.ERROR, error=f"Profile not found: {profile_id}")
             
-            name = self.ssh_profiles[profile_id].name
-            del self.ssh_profiles[profile_id]
-            await self._save_ssh_profiles()
+            profile = self.profiles[profile_id]
+            return ToolResult(
+                status=ToolStatus.SUCCESS,
+                data=asdict(profile),
+                message=f"🔐 Profile: {profile.name}"
+            )
+    
+    async def _delete_profile(self, profile_id: str, **kwargs) -> ToolResult:
+        """Delete a connection profile"""
+        async with self._lock:
+            name = None
+            
+            # Get name and remove from memory
+            if profile_id in self.profiles:
+                name = self.profiles[profile_id].name
+                del self.profiles[profile_id]
+            
+            # Delete from database
+            if self._db_available:
+                try:
+                    if not name:
+                        row = await self._db.select_one(
+                            "connection_profiles", "name", "profile_id = ?", (profile_id,)
+                        )
+                        if row:
+                            name = row["name"]
+                    await self._db.delete("connection_profiles", "profile_id = ?", (profile_id,))
+                except Exception as e:
+                    logging.warning(f"Database delete failed: {e}")
+            
+            if not name:
+                return ToolResult(status=ToolStatus.ERROR, error=f"Profile not found: {profile_id}")
+            
+            await self._save_profiles()
             
             return ToolResult(
                 status=ToolStatus.SUCCESS,
-                message=f"🗑️ Deleted SSH profile: {name}"
+                message=f"🗑️ Deleted profile: {name}"
             )
     
+    async def _update_profile(self, profile_id: str, **kwargs) -> ToolResult:
+        """Update a connection profile"""
+        async with self._lock:
+            # Build update data from kwargs
+            update_fields = ["name", "host", "port", "username", "auth_type", "key_path",
+                           "domain", "share_path", "remote_path", "local_path", 
+                           "use_ssl", "passive_mode", "extra_config"]
+            
+            update_data = {}
+            for field in update_fields:
+                if field in kwargs and kwargs[field] is not None:
+                    if field == "extra_config":
+                        update_data[field] = json.dumps(kwargs[field])
+                    elif field in ["use_ssl", "passive_mode"]:
+                        update_data[field] = 1 if kwargs[field] else 0
+                    else:
+                        update_data[field] = kwargs[field]
+            
+            if not update_data:
+                return ToolResult(status=ToolStatus.ERROR, error="No fields to update")
+            
+            # Update in database
+            if self._db_available:
+                try:
+                    await self._db.update(
+                        "connection_profiles", update_data, "profile_id = ?", (profile_id,)
+                    )
+                except Exception as e:
+                    logging.warning(f"Database update failed: {e}")
+            
+            # Update in memory
+            if profile_id in self.profiles:
+                profile = self.profiles[profile_id]
+                for field, value in kwargs.items():
+                    if field in update_fields and value is not None:
+                        setattr(profile, field, value)
+            
+            await self._save_profiles()
+            
+            return ToolResult(
+                status=ToolStatus.SUCCESS,
+                message=f"📝 Updated profile: {profile_id}"
+            )
+    
+    async def _mark_profile_used(self, profile_id: str):
+        """Mark a profile as used (update last_used and use_count)"""
+        now = datetime.now().isoformat()
+        
+        if self._db_available:
+            try:
+                await self._db.execute_raw(
+                    """UPDATE connection_profiles 
+                       SET last_used = ?, use_count = COALESCE(use_count, 0) + 1 
+                       WHERE profile_id = ?""",
+                    (now, profile_id)
+                )
+            except Exception:
+                pass
+        
+        if profile_id in self.profiles:
+            self.profiles[profile_id].last_used = now
+            self.profiles[profile_id].use_count += 1
+    
+    # Legacy SSH profile methods (redirect to unified system)
+    async def _ssh_add_profile(self, name: str, host: str, username: str, port: int = 22,
+                               auth_type: str = "password", key_path: str = None, 
+                               **kwargs) -> ToolResult:
+        """Add an SSH connection profile (legacy - redirects to add_profile)"""
+        return await self._add_profile(
+            profile_type="ssh", name=name, host=host, username=username,
+            port=port, auth_type=auth_type, key_path=key_path, **kwargs
+        )
+    
+    async def _ssh_list_profiles(self, **kwargs) -> ToolResult:
+        """List saved SSH profiles (legacy - redirects to list_profiles)"""
+        return await self._list_profiles(profile_type="ssh", **kwargs)
+    
+    async def _ssh_delete_profile(self, profile_id: str, **kwargs) -> ToolResult:
+        """Delete an SSH profile (legacy - redirects to delete_profile)"""
+        return await self._delete_profile(profile_id=profile_id, **kwargs)
+    
+    # ==================== SSH OPERATIONS ====================
+    
+    async def _get_profile_details(self, profile_id: str) -> Optional[ConnectionProfile]:
+        """Helper to get profile details from DB or memory"""
+        if self._db_available:
+            try:
+                row = await self._db.select_one(
+                    "connection_profiles", "*", "profile_id = ?", (profile_id,)
+                )
+                if row:
+                    return ConnectionProfile(
+                        id=row["profile_id"],
+                        profile_type=row["profile_type"],
+                        name=row["name"],
+                        host=row["host"],
+                        port=row["port"] or 0,
+                        username=row["username"] or "",
+                        auth_type=row["auth_type"] or "password",
+                        key_path=row["key_path"],
+                        domain=row["domain"],
+                        share_path=row["share_path"],
+                        remote_path=row["remote_path"],
+                        local_path=row["local_path"],
+                        use_ssl=bool(row["use_ssl"]),
+                        passive_mode=bool(row["passive_mode"]),
+                        extra_config=json.loads(row["extra_config"]) if row["extra_config"] else {},
+                        created_at=row["created_at"] or "",
+                        last_used=row["last_used"],
+                        use_count=row["use_count"] or 0
+                    )
+            except Exception:
+                pass
+        
+        return self.profiles.get(profile_id)
+    
     async def _ssh_connect(self, profile_id: str = "", host: str = "", username: str = "",
-                           port: int = 22, **kwargs) -> ToolResult:
-        """Open SSH connection in new terminal window"""
-        if not self.available_tools.get("ssh"):
-            return ToolResult(status=ToolStatus.ERROR, error="SSH is not installed")
+                           port: int = 22, use_putty: bool = False, **kwargs) -> ToolResult:
+        """Open SSH connection in new terminal window
+        
+        Args:
+            profile_id: Use saved profile
+            host: Hostname or IP
+            username: SSH username
+            port: SSH port (default 22)
+            use_putty: Use PuTTY instead of OpenSSH (Windows)
+        """
+        # Check for SSH tools
+        has_ssh = self.available_tools.get("ssh")
+        has_putty = self.available_tools.get("putty")
+        
+        if not has_ssh and not has_putty:
+            return ToolResult(status=ToolStatus.ERROR, error="No SSH client installed (ssh or putty)")
         
         try:
             # Get connection details from profile or params
-            if profile_id and profile_id in self.ssh_profiles:
-                profile = self.ssh_profiles[profile_id]
-                host = profile.host
-                username = profile.username
-                port = profile.port
-            elif not host or not username:
+            if profile_id:
+                profile = await self._get_profile_details(profile_id)
+                if profile:
+                    host = profile.host
+                    username = profile.username
+                    port = profile.get_default_port()
+                    await self._mark_profile_used(profile_id)
+            
+            if not host or not username:
                 return ToolResult(
                     status=ToolStatus.ERROR,
                     error="Provide profile_id or host+username"
                 )
             
-            # Build SSH command
-            ssh_cmd = f"ssh {username}@{host}"
-            if port != 22:
-                ssh_cmd += f" -p {port}"
-            
-            # Open in new terminal window
-            if self.is_windows:
-                cmd = f'Start-Process powershell -ArgumentList "-NoExit", "-Command", "{ssh_cmd}"'
+            # Decide which client to use
+            if use_putty and has_putty:
+                # Use PuTTY
+                cmd = ["putty", "-ssh", f"{username}@{host}", "-P", str(port)]
                 await asyncio.to_thread(
-                    subprocess.run,
-                    ["powershell", "-NoProfile", "-Command", cmd],
-                    capture_output=True, timeout=10
+                    subprocess.Popen, cmd,
+                    creationflags=subprocess.CREATE_NO_WINDOW if self.is_windows else 0
                 )
-            else:
-                # Linux/Mac - try common terminals
-                await asyncio.to_thread(
-                    subprocess.run,
-                    ["x-terminal-emulator", "-e", ssh_cmd],
-                    capture_output=True, timeout=10
-                )
+            elif has_ssh:
+                # Use OpenSSH
+                ssh_cmd = f"ssh {username}@{host}"
+                if port != 22:
+                    ssh_cmd += f" -p {port}"
+                
+                if self.is_windows:
+                    cmd = f'Start-Process powershell -ArgumentList "-NoExit", "-Command", "{ssh_cmd}"'
+                    await asyncio.to_thread(
+                        subprocess.run,
+                        ["powershell", "-NoProfile", "-Command", cmd],
+                        capture_output=True, timeout=10
+                    )
+                else:
+                    await asyncio.to_thread(
+                        subprocess.run,
+                        ["x-terminal-emulator", "-e", ssh_cmd],
+                        capture_output=True, timeout=10
+                    )
+            elif has_putty:
+                # Fallback to PuTTY
+                cmd = ["putty", "-ssh", f"{username}@{host}", "-P", str(port)]
+                await asyncio.to_thread(subprocess.Popen, cmd)
             
             return ToolResult(
                 status=ToolStatus.SUCCESS,
@@ -1064,35 +1491,59 @@ class DeveloperTools(BaseTool):
     
     async def _ssh_run_command(self, command: str, profile_id: str = "", host: str = "",
                                username: str = "", port: int = 22, password: str = "",
-                               key_path: str = "", timeout: int = 30, **kwargs) -> ToolResult:
-        """Run a command on remote server via SSH"""
-        if not self.available_tools.get("ssh"):
-            return ToolResult(status=ToolStatus.ERROR, error="SSH is not installed")
+                               key_path: str = "", timeout: int = 30, 
+                               use_plink: bool = False, **kwargs) -> ToolResult:
+        """Run a command on remote server via SSH
+        
+        Args:
+            command: Command to execute
+            profile_id: Use saved profile
+            host: Hostname or IP
+            username: SSH username
+            port: SSH port
+            key_path: Path to SSH private key
+            timeout: Command timeout in seconds
+            use_plink: Use PuTTY plink instead of OpenSSH
+        """
+        has_ssh = self.available_tools.get("ssh")
+        has_plink = self.available_tools.get("plink")
+        
+        if not has_ssh and not has_plink:
+            return ToolResult(status=ToolStatus.ERROR, error="No SSH client installed (ssh or plink)")
         
         try:
             # Get connection details from profile or params
-            if profile_id and profile_id in self.ssh_profiles:
-                profile = self.ssh_profiles[profile_id]
-                host = profile.host
-                username = profile.username
-                port = profile.port
-                key_path = profile.key_path or key_path
-            elif not host or not username:
+            if profile_id:
+                profile = await self._get_profile_details(profile_id)
+                if profile:
+                    host = profile.host
+                    username = profile.username
+                    port = profile.get_default_port()
+                    key_path = profile.key_path or key_path
+                    await self._mark_profile_used(profile_id)
+            
+            if not host or not username:
                 return ToolResult(
                     status=ToolStatus.ERROR,
                     error="Provide profile_id or host+username"
                 )
             
-            # Build SSH command
-            cmd = ["ssh", "-o", "StrictHostKeyChecking=no", "-o", "BatchMode=yes"]
-            
-            if key_path:
-                cmd.extend(["-i", key_path])
-            if port != 22:
-                cmd.extend(["-p", str(port)])
-            
-            cmd.append(f"{username}@{host}")
-            cmd.append(command)
+            # Build command
+            if use_plink and has_plink:
+                # Use PuTTY plink
+                cmd = ["plink", "-ssh", "-batch"]
+                if key_path:
+                    cmd.extend(["-i", key_path])
+                cmd.extend(["-P", str(port), f"{username}@{host}", command])
+            else:
+                # Use OpenSSH
+                cmd = ["ssh", "-o", "StrictHostKeyChecking=no", "-o", "BatchMode=yes"]
+                if key_path:
+                    cmd.extend(["-i", key_path])
+                if port != 22:
+                    cmd.extend(["-p", str(port)])
+                cmd.append(f"{username}@{host}")
+                cmd.append(command)
             
             result = await asyncio.to_thread(
                 subprocess.run, cmd,
@@ -1117,6 +1568,642 @@ class DeveloperTools(BaseTool):
             
         except subprocess.TimeoutExpired:
             return ToolResult(status=ToolStatus.ERROR, error=f"SSH command timed out after {timeout}s")
+        except Exception as e:
+            return ToolResult(status=ToolStatus.ERROR, error=str(e))
+    
+    # ==================== SMB/NETWORK SHARES ====================
+    
+    async def _smb_connect(self, profile_id: str = "", host: str = "", share: str = "",
+                           username: str = "", password: str = "", domain: str = "",
+                           **kwargs) -> ToolResult:
+        """Connect to SMB/CIFS network share (opens in Explorer)
+        
+        Args:
+            profile_id: Use saved SMB profile
+            host: Server hostname or IP
+            share: Share name
+            username: Username (optional)
+            domain: Windows domain (optional)
+        """
+        if not self.is_windows:
+            return ToolResult(status=ToolStatus.ERROR, error="SMB connect only supported on Windows")
+        
+        try:
+            # Get from profile
+            if profile_id:
+                profile = await self._get_profile_details(profile_id)
+                if profile and profile.profile_type == "smb":
+                    host = profile.host
+                    share = profile.share_path or share
+                    username = profile.username or username
+                    domain = profile.domain or domain
+                    await self._mark_profile_used(profile_id)
+            
+            if not host:
+                return ToolResult(status=ToolStatus.ERROR, error="Host is required")
+            
+            # Build UNC path
+            unc_path = f"\\\\{host}"
+            if share:
+                unc_path += f"\\{share}"
+            
+            # Open in Explorer
+            await asyncio.to_thread(
+                subprocess.run,
+                ["explorer", unc_path],
+                capture_output=True, timeout=10
+            )
+            
+            return ToolResult(
+                status=ToolStatus.SUCCESS,
+                message=f"📁 Opening {unc_path}"
+            )
+            
+        except Exception as e:
+            return ToolResult(status=ToolStatus.ERROR, error=str(e))
+    
+    async def _smb_map_drive(self, drive_letter: str, host: str, share: str,
+                             username: str = "", password: str = "", domain: str = "",
+                             persistent: bool = False, profile_id: str = "", **kwargs) -> ToolResult:
+        """Map a network drive to SMB share
+        
+        Args:
+            drive_letter: Drive letter (e.g., 'Z')
+            host: Server hostname or IP
+            share: Share name
+            username: Username (optional)
+            password: Password (optional, will prompt if needed)
+            domain: Windows domain (optional)
+            persistent: Reconnect at logon
+            profile_id: Use saved SMB profile
+        """
+        if not self.is_windows:
+            return ToolResult(status=ToolStatus.ERROR, error="Drive mapping only supported on Windows")
+        
+        try:
+            # Get from profile
+            if profile_id:
+                profile = await self._get_profile_details(profile_id)
+                if profile and profile.profile_type == "smb":
+                    host = profile.host
+                    share = profile.share_path or share
+                    username = profile.username or username
+                    domain = profile.domain or domain
+                    await self._mark_profile_used(profile_id)
+            
+            if not host or not share:
+                return ToolResult(status=ToolStatus.ERROR, error="Host and share are required")
+            
+            # Normalize drive letter
+            drive = drive_letter.upper().rstrip(':') + ':'
+            unc_path = f"\\\\{host}\\{share}"
+            
+            # Build net use command
+            cmd = ["net", "use", drive, unc_path]
+            
+            if username:
+                user_str = f"{domain}\\{username}" if domain else username
+                cmd.extend([f"/user:{user_str}"])
+            
+            if password:
+                cmd.append(password)
+            
+            if persistent:
+                cmd.append("/persistent:yes")
+            else:
+                cmd.append("/persistent:no")
+            
+            result = await asyncio.to_thread(
+                subprocess.run, cmd,
+                capture_output=True, text=True, timeout=30
+            )
+            
+            if result.returncode != 0:
+                return ToolResult(
+                    status=ToolStatus.ERROR,
+                    error=result.stderr.strip() or result.stdout.strip()
+                )
+            
+            return ToolResult(
+                status=ToolStatus.SUCCESS,
+                data={"drive": drive, "path": unc_path},
+                message=f"📁 Mapped {drive} to {unc_path}"
+            )
+            
+        except Exception as e:
+            return ToolResult(status=ToolStatus.ERROR, error=str(e))
+    
+    async def _smb_unmap_drive(self, drive_letter: str, force: bool = False, **kwargs) -> ToolResult:
+        """Disconnect a mapped network drive
+        
+        Args:
+            drive_letter: Drive letter to disconnect (e.g., 'Z')
+            force: Force disconnect even if in use
+        """
+        if not self.is_windows:
+            return ToolResult(status=ToolStatus.ERROR, error="Drive unmapping only supported on Windows")
+        
+        try:
+            drive = drive_letter.upper().rstrip(':') + ':'
+            
+            cmd = ["net", "use", drive, "/delete"]
+            if force:
+                cmd.append("/yes")
+            
+            result = await asyncio.to_thread(
+                subprocess.run, cmd,
+                capture_output=True, text=True, timeout=30
+            )
+            
+            if result.returncode != 0:
+                return ToolResult(
+                    status=ToolStatus.ERROR,
+                    error=result.stderr.strip() or result.stdout.strip()
+                )
+            
+            return ToolResult(
+                status=ToolStatus.SUCCESS,
+                message=f"📁 Disconnected {drive}"
+            )
+            
+        except Exception as e:
+            return ToolResult(status=ToolStatus.ERROR, error=str(e))
+    
+    async def _smb_list_shares(self, host: str, username: str = "", password: str = "",
+                               domain: str = "", profile_id: str = "", **kwargs) -> ToolResult:
+        """List available shares on a server
+        
+        Args:
+            host: Server hostname or IP
+            username: Username (optional)
+            domain: Windows domain (optional)
+            profile_id: Use saved SMB profile
+        """
+        if not self.is_windows:
+            return ToolResult(status=ToolStatus.ERROR, error="SMB only supported on Windows")
+        
+        try:
+            # Get from profile
+            if profile_id:
+                profile = await self._get_profile_details(profile_id)
+                if profile and profile.profile_type == "smb":
+                    host = profile.host
+                    username = profile.username or username
+                    domain = profile.domain or domain
+                    await self._mark_profile_used(profile_id)
+            
+            if not host:
+                return ToolResult(status=ToolStatus.ERROR, error="Host is required")
+            
+            # Use net view to list shares
+            cmd = ["net", "view", f"\\\\{host}"]
+            
+            result = await asyncio.to_thread(
+                subprocess.run, cmd,
+                capture_output=True, text=True, timeout=30
+            )
+            
+            if result.returncode != 0:
+                return ToolResult(
+                    status=ToolStatus.ERROR,
+                    error=result.stderr.strip() or "Failed to list shares"
+                )
+            
+            # Parse output
+            shares = []
+            lines = result.stdout.strip().split('\n')
+            for line in lines:
+                line = line.strip()
+                if line and not line.startswith('-') and not line.startswith('Share') and not line.startswith('The command'):
+                    parts = line.split()
+                    if parts:
+                        shares.append({"name": parts[0], "type": parts[1] if len(parts) > 1 else "Unknown"})
+            
+            return ToolResult(
+                status=ToolStatus.SUCCESS,
+                data=shares,
+                message=f"📁 {len(shares)} share(s) on {host}"
+            )
+            
+        except Exception as e:
+            return ToolResult(status=ToolStatus.ERROR, error=str(e))
+    
+    # ==================== FTP/SFTP ====================
+    
+    async def _ftp_connect(self, profile_id: str = "", host: str = "", username: str = "",
+                           port: int = 21, use_sftp: bool = False, **kwargs) -> ToolResult:
+        """Open FTP/SFTP connection (opens WinSCP or terminal)
+        
+        Args:
+            profile_id: Use saved FTP/SFTP profile
+            host: FTP server hostname
+            username: FTP username
+            port: FTP port (21 for FTP, 22 for SFTP)
+            use_sftp: Use SFTP instead of FTP
+        """
+        try:
+            # Get from profile
+            if profile_id:
+                profile = await self._get_profile_details(profile_id)
+                if profile and profile.profile_type in ["ftp", "sftp"]:
+                    host = profile.host
+                    username = profile.username or username
+                    port = profile.get_default_port()
+                    use_sftp = profile.profile_type == "sftp"
+                    await self._mark_profile_used(profile_id)
+            
+            if not host:
+                return ToolResult(status=ToolStatus.ERROR, error="Host is required")
+            
+            # Try WinSCP first
+            if self.available_tools.get("winscp"):
+                protocol = "sftp" if use_sftp else "ftp"
+                user_str = f"{username}@" if username else ""
+                url = f"{protocol}://{user_str}{host}:{port}"
+                
+                await asyncio.to_thread(
+                    subprocess.Popen,
+                    ["winscp", url],
+                    creationflags=subprocess.CREATE_NO_WINDOW if self.is_windows else 0
+                )
+                
+                return ToolResult(
+                    status=ToolStatus.SUCCESS,
+                    message=f"📂 Opening WinSCP to {protocol}://{host}:{port}"
+                )
+            
+            # Fallback to command line
+            if use_sftp and self.available_tools.get("ssh"):
+                sftp_cmd = f"sftp {username}@{host}" if username else f"sftp {host}"
+                if port != 22:
+                    sftp_cmd = f"sftp -P {port} {username}@{host}" if username else f"sftp -P {port} {host}"
+                
+                if self.is_windows:
+                    cmd = f'Start-Process powershell -ArgumentList "-NoExit", "-Command", "{sftp_cmd}"'
+                    await asyncio.to_thread(
+                        subprocess.run,
+                        ["powershell", "-NoProfile", "-Command", cmd],
+                        capture_output=True, timeout=10
+                    )
+                
+                return ToolResult(
+                    status=ToolStatus.SUCCESS,
+                    message=f"📂 Opening SFTP to {host}:{port}"
+                )
+            
+            return ToolResult(
+                status=ToolStatus.ERROR,
+                error="No FTP client available (install WinSCP or use SSH for SFTP)"
+            )
+            
+        except Exception as e:
+            return ToolResult(status=ToolStatus.ERROR, error=str(e))
+    
+    async def _ftp_list(self, profile_id: str = "", host: str = "", username: str = "",
+                        password: str = "", port: int = 22, remote_path: str = "/",
+                        use_sftp: bool = True, key_path: str = "", **kwargs) -> ToolResult:
+        """List files on SFTP server using paramiko
+        
+        Args:
+            profile_id: Use saved profile
+            host: SFTP server hostname
+            username: Username
+            password: Password (or use key_path)
+            port: Port (default 22 for SFTP)
+            remote_path: Directory to list (default /)
+            key_path: Path to SSH private key
+        """
+        if not HAS_PARAMIKO:
+            return ToolResult(
+                status=ToolStatus.ERROR,
+                error="paramiko not installed. Install with: pip install paramiko"
+            )
+        
+        try:
+            # Get from profile
+            if profile_id:
+                profile = await self._get_profile_details(profile_id)
+                if profile:
+                    host = profile.host
+                    username = profile.username or username
+                    port = profile.get_default_port()
+                    key_path = profile.key_path or key_path
+                    remote_path = profile.remote_path or remote_path
+                    await self._mark_profile_used(profile_id)
+            
+            if not host or not username:
+                return ToolResult(status=ToolStatus.ERROR, error="Host and username required")
+            
+            # Run SFTP operation in thread to not block
+            def sftp_list():
+                ssh = paramiko.SSHClient()
+                ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+                
+                try:
+                    # Connect with key or password
+                    if key_path and Path(key_path).exists():
+                        ssh.connect(host, port=port, username=username, key_filename=key_path, timeout=30)
+                    elif password:
+                        ssh.connect(host, port=port, username=username, password=password, timeout=30)
+                    else:
+                        # Try without password (agent or default key)
+                        ssh.connect(host, port=port, username=username, timeout=30)
+                    
+                    sftp = ssh.open_sftp()
+                    files = []
+                    
+                    for entry in sftp.listdir_attr(remote_path):
+                        file_type = "d" if entry.st_mode and (entry.st_mode & 0o40000) else "f"
+                        files.append({
+                            "name": entry.filename,
+                            "type": file_type,
+                            "size": entry.st_size,
+                            "modified": datetime.fromtimestamp(entry.st_mtime).isoformat() if entry.st_mtime else None
+                        })
+                    
+                    sftp.close()
+                    ssh.close()
+                    return files
+                except Exception as e:
+                    ssh.close()
+                    raise e
+            
+            files = await asyncio.to_thread(sftp_list)
+            
+            return ToolResult(
+                status=ToolStatus.SUCCESS,
+                data=files,
+                message=f"📂 {len(files)} items in {remote_path} on {host}"
+            )
+            
+        except paramiko.AuthenticationException:
+            return ToolResult(status=ToolStatus.ERROR, error="Authentication failed - check username/password/key")
+        except paramiko.SSHException as e:
+            return ToolResult(status=ToolStatus.ERROR, error=f"SSH error: {e}")
+        except Exception as e:
+            return ToolResult(status=ToolStatus.ERROR, error=str(e))
+    
+    async def _ftp_upload(self, local_file: str, remote_path: str, profile_id: str = "",
+                          host: str = "", username: str = "", password: str = "",
+                          port: int = 22, key_path: str = "", use_paramiko: bool = True,
+                          **kwargs) -> ToolResult:
+        """Upload file via SFTP using paramiko or scp/pscp
+        
+        Args:
+            local_file: Local file path to upload
+            remote_path: Remote destination path
+            profile_id: Use saved profile
+            host: SFTP server hostname
+            username: Username
+            password: Password (or use key_path)
+            port: Port (default 22)
+            key_path: Path to SSH private key
+            use_paramiko: Use paramiko (True) or fall back to scp/pscp (False)
+        """
+        try:
+            # Get from profile
+            if profile_id:
+                profile = await self._get_profile_details(profile_id)
+                if profile:
+                    host = profile.host
+                    username = profile.username or username
+                    port = profile.get_default_port()
+                    key_path = profile.key_path or key_path
+                    await self._mark_profile_used(profile_id)
+            
+            if not host or not username:
+                return ToolResult(status=ToolStatus.ERROR, error="Host and username required")
+            
+            if not Path(local_file).exists():
+                return ToolResult(status=ToolStatus.ERROR, error=f"Local file not found: {local_file}")
+            
+            # Try paramiko first
+            if use_paramiko and HAS_PARAMIKO:
+                def sftp_upload():
+                    ssh = paramiko.SSHClient()
+                    ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+                    
+                    try:
+                        if key_path and Path(key_path).exists():
+                            ssh.connect(host, port=port, username=username, key_filename=key_path, timeout=30)
+                        elif password:
+                            ssh.connect(host, port=port, username=username, password=password, timeout=30)
+                        else:
+                            ssh.connect(host, port=port, username=username, timeout=30)
+                        
+                        sftp = ssh.open_sftp()
+                        sftp.put(local_file, remote_path)
+                        sftp.close()
+                        ssh.close()
+                        return True
+                    except Exception as e:
+                        ssh.close()
+                        raise e
+                
+                await asyncio.to_thread(sftp_upload)
+                
+                return ToolResult(
+                    status=ToolStatus.SUCCESS,
+                    message=f"📤 Uploaded {Path(local_file).name} to {host}:{remote_path}"
+                )
+            
+            # Fall back to scp/pscp
+            has_pscp = self.available_tools.get("pscp")
+            has_ssh = self.available_tools.get("ssh")
+            
+            if not has_pscp and not has_ssh:
+                return ToolResult(status=ToolStatus.ERROR, error="No SCP client available (pscp, scp, or paramiko)")
+            
+            if has_pscp:
+                cmd = ["pscp", "-P", str(port), local_file, f"{username}@{host}:{remote_path}"]
+            else:
+                cmd = ["scp", "-P", str(port), local_file, f"{username}@{host}:{remote_path}"]
+            
+            result = await asyncio.to_thread(
+                subprocess.run, cmd,
+                capture_output=True, text=True, timeout=300
+            )
+            
+            if result.returncode != 0:
+                return ToolResult(
+                    status=ToolStatus.ERROR,
+                    error=result.stderr.strip() or "Upload failed"
+                )
+            
+            return ToolResult(
+                status=ToolStatus.SUCCESS,
+                message=f"📤 Uploaded {Path(local_file).name} to {host}:{remote_path}"
+            )
+            
+        except paramiko.AuthenticationException:
+            return ToolResult(status=ToolStatus.ERROR, error="Authentication failed")
+        except Exception as e:
+            return ToolResult(status=ToolStatus.ERROR, error=str(e))
+    
+    async def _ftp_download(self, remote_file: str, local_path: str, profile_id: str = "",
+                            host: str = "", username: str = "", password: str = "",
+                            port: int = 22, key_path: str = "", use_paramiko: bool = True,
+                            **kwargs) -> ToolResult:
+        """Download file via SFTP using paramiko or scp/pscp
+        
+        Args:
+            remote_file: Remote file path to download
+            local_path: Local destination path
+            profile_id: Use saved profile
+            host: SFTP server hostname
+            username: Username
+            password: Password (or use key_path)
+            port: Port (default 22)
+            key_path: Path to SSH private key
+            use_paramiko: Use paramiko (True) or fall back to scp/pscp (False)
+        """
+        try:
+            # Get from profile
+            if profile_id:
+                profile = await self._get_profile_details(profile_id)
+                if profile:
+                    host = profile.host
+                    username = profile.username or username
+                    port = profile.get_default_port()
+                    key_path = profile.key_path or key_path
+                    await self._mark_profile_used(profile_id)
+            
+            if not host or not username:
+                return ToolResult(status=ToolStatus.ERROR, error="Host and username required")
+            
+            # Ensure local directory exists
+            local_dir = Path(local_path).parent
+            if not local_dir.exists():
+                local_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Try paramiko first
+            if use_paramiko and HAS_PARAMIKO:
+                def sftp_download():
+                    ssh = paramiko.SSHClient()
+                    ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+                    
+                    try:
+                        if key_path and Path(key_path).exists():
+                            ssh.connect(host, port=port, username=username, key_filename=key_path, timeout=30)
+                        elif password:
+                            ssh.connect(host, port=port, username=username, password=password, timeout=30)
+                        else:
+                            ssh.connect(host, port=port, username=username, timeout=30)
+                        
+                        sftp = ssh.open_sftp()
+                        sftp.get(remote_file, local_path)
+                        sftp.close()
+                        ssh.close()
+                        return True
+                    except Exception as e:
+                        ssh.close()
+                        raise e
+                
+                await asyncio.to_thread(sftp_download)
+                
+                return ToolResult(
+                    status=ToolStatus.SUCCESS,
+                    message=f"📥 Downloaded {remote_file} to {local_path}"
+                )
+            
+            # Fall back to scp/pscp
+            has_pscp = self.available_tools.get("pscp")
+            has_ssh = self.available_tools.get("ssh")
+            
+            if not has_pscp and not has_ssh:
+                return ToolResult(status=ToolStatus.ERROR, error="No SCP client available (pscp, scp, or paramiko)")
+            
+            if has_pscp:
+                cmd = ["pscp", "-P", str(port), f"{username}@{host}:{remote_file}", local_path]
+            else:
+                cmd = ["scp", "-P", str(port), f"{username}@{host}:{remote_file}", local_path]
+            
+            result = await asyncio.to_thread(
+                subprocess.run, cmd,
+                capture_output=True, text=True, timeout=300
+            )
+            
+            if result.returncode != 0:
+                return ToolResult(
+                    status=ToolStatus.ERROR,
+                    error=result.stderr.strip() or "Download failed"
+                )
+            
+            return ToolResult(
+                status=ToolStatus.SUCCESS,
+                message=f"📥 Downloaded {remote_file} to {local_path}"
+            )
+            
+        except paramiko.AuthenticationException:
+            return ToolResult(status=ToolStatus.ERROR, error="Authentication failed")
+        except FileNotFoundError:
+            return ToolResult(status=ToolStatus.ERROR, error=f"Remote file not found: {remote_file}")
+        except Exception as e:
+            return ToolResult(status=ToolStatus.ERROR, error=str(e))
+    
+    # ==================== RDP ====================
+    
+    async def _rdp_connect(self, profile_id: str = "", host: str = "", username: str = "",
+                           domain: str = "", port: int = 3389, fullscreen: bool = True,
+                           width: int = 0, height: int = 0, **kwargs) -> ToolResult:
+        """Open Remote Desktop connection
+        
+        Args:
+            profile_id: Use saved RDP profile
+            host: Remote computer hostname or IP
+            username: Username (optional)
+            domain: Windows domain (optional)
+            port: RDP port (default 3389)
+            fullscreen: Open in fullscreen mode
+            width: Window width (if not fullscreen)
+            height: Window height (if not fullscreen)
+        """
+        if not self.is_windows:
+            return ToolResult(status=ToolStatus.ERROR, error="RDP only supported on Windows")
+        
+        if not self.available_tools.get("mstsc"):
+            return ToolResult(status=ToolStatus.ERROR, error="mstsc (Remote Desktop) not available")
+        
+        try:
+            # Get from profile
+            if profile_id:
+                profile = await self._get_profile_details(profile_id)
+                if profile and profile.profile_type == "rdp":
+                    host = profile.host
+                    username = profile.username or username
+                    domain = profile.domain or domain
+                    port = profile.get_default_port()
+                    await self._mark_profile_used(profile_id)
+            
+            if not host:
+                return ToolResult(status=ToolStatus.ERROR, error="Host is required")
+            
+            # Build mstsc command
+            cmd = ["mstsc"]
+            
+            # Add host (with port if non-standard)
+            if port != 3389:
+                cmd.append(f"/v:{host}:{port}")
+            else:
+                cmd.append(f"/v:{host}")
+            
+            if fullscreen:
+                cmd.append("/f")
+            elif width and height:
+                cmd.append(f"/w:{width}")
+                cmd.append(f"/h:{height}")
+            
+            # Launch RDP
+            await asyncio.to_thread(
+                subprocess.Popen, cmd,
+                creationflags=subprocess.CREATE_NO_WINDOW
+            )
+            
+            return ToolResult(
+                status=ToolStatus.SUCCESS,
+                message=f"🖥️ Opening Remote Desktop to {host}:{port}"
+            )
+            
         except Exception as e:
             return ToolResult(status=ToolStatus.ERROR, error=str(e))
     
@@ -1207,25 +2294,149 @@ class DeveloperTools(BaseTool):
     
     # ==================== DATA PERSISTENCE ====================
     
+    async def _migrate_ssh_profiles_to_db(self):
+        """Migrate legacy SSH profiles from JSON to database"""
+        if not self._db_available:
+            return
+        
+        try:
+            # Check if database already has profiles
+            count = await self._db.count("connection_profiles")
+            if count > 0:
+                logging.info(f"Database already has {count} profiles, skipping migration")
+                return
+            
+            # Load legacy SSH profiles
+            if not self.ssh_profiles_file.exists():
+                return
+            
+            async with aiofiles.open(self.ssh_profiles_file, 'r') as f:
+                data = json.loads(await f.read())
+            
+            if not data:
+                return
+            
+            migrated = 0
+            for item in data:
+                try:
+                    await self._db.insert("connection_profiles", {
+                        "profile_id": item["id"],
+                        "profile_type": "ssh",
+                        "name": item["name"],
+                        "host": item["host"],
+                        "port": item.get("port", 22),
+                        "username": item.get("username", ""),
+                        "auth_type": item.get("auth_type", "password"),
+                        "key_path": item.get("key_path"),
+                        "created_at": item.get("created_at", datetime.now().isoformat())
+                    })
+                    migrated += 1
+                except Exception as e:
+                    logging.warning(f"Failed to migrate SSH profile {item.get('id')}: {e}")
+            
+            logging.info(f"Migrated {migrated} SSH profiles from JSON to database")
+            
+        except Exception as e:
+            logging.warning(f"SSH profile migration failed: {e}")
+    
+    async def _load_profiles(self):
+        """Load connection profiles from database or JSON"""
+        try:
+            # Try loading from database first
+            if self._db_available:
+                try:
+                    db_profiles = await self._db.select(
+                        "connection_profiles", "*",
+                        order_by="last_used DESC NULLS LAST"
+                    )
+                    for row in db_profiles:
+                        profile = ConnectionProfile(
+                            id=row["profile_id"],
+                            profile_type=row["profile_type"],
+                            name=row["name"],
+                            host=row["host"],
+                            port=row["port"] or 0,
+                            username=row["username"] or "",
+                            auth_type=row["auth_type"] or "password",
+                            key_path=row["key_path"],
+                            domain=row["domain"],
+                            share_path=row["share_path"],
+                            remote_path=row["remote_path"],
+                            local_path=row["local_path"],
+                            use_ssl=bool(row["use_ssl"]),
+                            passive_mode=bool(row["passive_mode"]),
+                            extra_config=json.loads(row["extra_config"]) if row["extra_config"] else {},
+                            created_at=row["created_at"] or "",
+                            last_used=row["last_used"],
+                            use_count=row["use_count"] or 0
+                        )
+                        self.profiles[profile.id] = profile
+                    
+                    if db_profiles:
+                        logging.info(f"Loaded {len(db_profiles)} connection profiles from database")
+                        return
+                except Exception as e:
+                    logging.warning(f"Database load failed, trying JSON: {e}")
+            
+            # Fallback to JSON file
+            if self.profiles_file.exists():
+                async with aiofiles.open(self.profiles_file, 'r') as f:
+                    data = json.loads(await f.read())
+                    for item in data:
+                        # Handle extra_config which might be a dict already
+                        if isinstance(item.get('extra_config'), str):
+                            item['extra_config'] = json.loads(item['extra_config'])
+                        self.profiles[item['id']] = ConnectionProfile(**item)
+            
+            # Also load legacy SSH profiles for backward compatibility
+            await self._load_ssh_profiles()
+            
+        except Exception as e:
+            logging.warning(f"Could not load profiles: {e}")
+    
     async def _load_ssh_profiles(self):
-        """Load SSH profiles from file"""
+        """Load legacy SSH profiles from file (for backward compatibility)"""
         try:
             if self.ssh_profiles_file.exists():
                 async with aiofiles.open(self.ssh_profiles_file, 'r') as f:
                     data = json.loads(await f.read())
                     for item in data:
-                        self.ssh_profiles[item['id']] = SSHConnection(**item)
+                        # Convert to new format if not already in profiles
+                        if item['id'] not in self.profiles:
+                            self.profiles[item['id']] = ConnectionProfile(
+                                id=item['id'],
+                                profile_type="ssh",
+                                name=item['name'],
+                                host=item['host'],
+                                port=item.get('port', 22),
+                                username=item.get('username', ''),
+                                auth_type=item.get('auth_type', 'password'),
+                                key_path=item.get('key_path'),
+                                created_at=item.get('created_at', '')
+                            )
         except Exception as e:
-            logging.warning(f"Could not load SSH profiles: {e}")
+            logging.warning(f"Could not load legacy SSH profiles: {e}")
     
-    async def _save_ssh_profiles(self):
-        """Save SSH profiles to file"""
+    async def _save_profiles(self):
+        """Save connection profiles to JSON backup"""
         try:
-            data = [asdict(p) for p in self.ssh_profiles.values()]
-            async with aiofiles.open(self.ssh_profiles_file, 'w') as f:
+            data = []
+            for p in self.profiles.values():
+                item = asdict(p)
+                # Ensure extra_config is serializable
+                if isinstance(item.get('extra_config'), dict):
+                    item['extra_config'] = item['extra_config']
+                data.append(item)
+            
+            async with aiofiles.open(self.profiles_file, 'w') as f:
                 await f.write(json.dumps(data, indent=2))
         except Exception as e:
-            logging.error(f"Could not save SSH profiles: {e}")
+            logging.error(f"Could not save profiles: {e}")
+    
+    async def _save_ssh_profiles(self):
+        """Save SSH profiles to legacy file (for backward compatibility)"""
+        # Just redirect to save_profiles now
+        await self._save_profiles()
 
     
     def get_schema(self) -> Dict[str, Any]:
@@ -1248,9 +2459,17 @@ class DeveloperTools(BaseTool):
                             "pip_install", "pip_uninstall", "pip_list",
                             "npm_install", "npm_uninstall", "npm_list",
                             "winget_search", "winget_install", "winget_uninstall", "winget_list",
-                            # SSH
+                            # Connection Profiles
+                            "add_profile", "list_profiles", "get_profile", "delete_profile", "update_profile",
+                            # SSH (legacy + new)
                             "ssh_connect", "ssh_run_command", "ssh_add_profile", 
                             "ssh_list_profiles", "ssh_delete_profile",
+                            # SMB/Network
+                            "smb_connect", "smb_map_drive", "smb_unmap_drive", "smb_list_shares",
+                            # FTP/SFTP
+                            "ftp_connect", "ftp_list", "ftp_upload", "ftp_download",
+                            # RDP
+                            "rdp_connect",
                             # Utility
                             "check_tools", "find_tool_path", "run_multiple_commands"
                         ],
@@ -1281,16 +2500,47 @@ class DeveloperTools(BaseTool):
                     "outdated": {"type": "boolean", "description": "Show only outdated packages (pip)"},
                     "depth": {"type": "integer", "description": "Dependency tree depth (npm)", "default": 0},
                     "query": {"type": "string", "description": "Search query (winget)"},
-                    # SSH params
-                    "profile_id": {"type": "string", "description": "SSH profile ID"},
+                    # Connection Profile params
+                    "profile_id": {"type": "string", "description": "Connection profile ID"},
+                    "profile_type": {
+                        "type": "string",
+                        "enum": ["ssh", "smb", "ftp", "sftp", "rdp"],
+                        "description": "Type of connection profile"
+                    },
                     "name": {"type": "string", "description": "Profile name"},
-                    "host": {"type": "string", "description": "SSH host/IP address"},
-                    "username": {"type": "string", "description": "SSH username"},
-                    "port": {"type": "integer", "description": "SSH port", "default": 22},
-                    "auth_type": {"type": "string", "enum": ["password", "key"], "description": "Authentication type"},
-                    "key_path": {"type": "string", "description": "Path to SSH private key"},
-                    "password": {"type": "string", "description": "SSH password (not stored)"},
+                    "host": {"type": "string", "description": "Host/IP address"},
+                    "username": {"type": "string", "description": "Username"},
+                    "port": {"type": "integer", "description": "Port number (0 = default for type)"},
+                    "auth_type": {
+                        "type": "string",
+                        "enum": ["password", "key", "ntlm", "kerberos"],
+                        "description": "Authentication type"
+                    },
+                    "key_path": {"type": "string", "description": "Path to SSH key or certificate"},
+                    "domain": {"type": "string", "description": "Windows domain (SMB/RDP)"},
+                    "share": {"type": "string", "description": "SMB share name"},
+                    "share_path": {"type": "string", "description": "SMB share path"},
+                    "remote_path": {"type": "string", "description": "Remote directory path"},
+                    "local_path": {"type": "string", "description": "Local directory path"},
+                    "use_ssl": {"type": "boolean", "description": "Use SSL/TLS (FTP)"},
+                    "passive_mode": {"type": "boolean", "description": "Use passive mode (FTP)", "default": True},
+                    "use_sftp": {"type": "boolean", "description": "Use SFTP instead of FTP"},
+                    "use_putty": {"type": "boolean", "description": "Use PuTTY instead of OpenSSH"},
+                    "use_plink": {"type": "boolean", "description": "Use plink instead of ssh"},
+                    # SSH/Remote params
+                    "password": {"type": "string", "description": "Password (not stored in profiles)"},
                     "command": {"type": "string", "description": "Command to run on remote server"},
+                    # SMB params
+                    "drive_letter": {"type": "string", "description": "Drive letter for mapping (e.g., 'Z')"},
+                    "persistent": {"type": "boolean", "description": "Reconnect at logon"},
+                    "force": {"type": "boolean", "description": "Force operation"},
+                    # FTP params
+                    "local_file": {"type": "string", "description": "Local file path for upload"},
+                    "remote_file": {"type": "string", "description": "Remote file path for download"},
+                    # RDP params
+                    "fullscreen": {"type": "boolean", "description": "Open RDP in fullscreen", "default": True},
+                    "width": {"type": "integer", "description": "RDP window width"},
+                    "height": {"type": "integer", "description": "RDP window height"},
                     # Utility params
                     "tool": {"type": "string", "description": "Tool name to find path for"},
                     "commands": {
@@ -1306,5 +2556,13 @@ class DeveloperTools(BaseTool):
     
     async def cleanup(self):
         """Cleanup developer tools"""
-        await self._save_ssh_profiles()
+        await self._save_profiles()
+        
+        # Close database connection
+        if self._db_available and self._db:
+            try:
+                await self._db.cleanup()
+            except Exception as e:
+                logging.warning(f"Database cleanup error: {e}")
+        
         logging.info("Developer tools cleanup completed")

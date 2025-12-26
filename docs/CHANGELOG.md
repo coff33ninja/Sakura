@@ -5,6 +5,55 @@ All notable changes to Sakura AI will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.2] - 2025-12-26
+
+### 🔌 Connection Profiles System
+
+Unified connection profiles for SSH, SMB, FTP/SFTP, and RDP.
+
+#### Added
+
+**Connection Profiles Database (Phase 10)**
+- `connection_profiles` table for all connection types
+- Profile management: `add_profile`, `list_profiles`, `get_profile`, `delete_profile`, `update_profile`
+- Auto-detect tools: ssh, putty, plink, pscp, winscp, mstsc, net
+- Usage tracking (last_used, use_count)
+
+**SMB/Network Share Support**
+- `smb_connect` - Open network share in Explorer
+- `smb_map_drive` - Map network drive (net use)
+- `smb_unmap_drive` - Disconnect mapped drive
+- `smb_list_shares` - List available shares on server
+
+**FTP/SFTP Support (with paramiko)**
+- `ftp_connect` - Open FTP/SFTP connection (WinSCP or terminal)
+- `ftp_list` - List remote directory contents via SFTP (paramiko)
+- `ftp_upload` - Upload file via SFTP (paramiko) or SCP/PSCP fallback
+- `ftp_download` - Download file via SFTP (paramiko) or SCP/PSCP fallback
+- Native paramiko SFTP for programmatic file operations
+- Fallback to pscp/scp when paramiko unavailable
+
+**RDP Support**
+- `rdp_connect` - Open Remote Desktop connection (mstsc)
+
+**SSH Enhancements**
+- PuTTY support (`use_putty` option)
+- plink support for command execution (`use_plink` option)
+- Profile-based connections with usage tracking
+
+#### Changed
+- `tools/developer/devtools.py` - Unified profile system, 14 new actions
+- `modules/database.py` - Added connection_profiles table
+- Developer actions increased from 33 to 47
+- Total tool actions: 191 (up from 177)
+
+#### Technical
+- Legacy SSH methods redirect to unified profile system
+- Auto-migrate existing SSH profiles to database
+- JSON backup maintained for transparency
+
+---
+
 ## [1.2.1] - 2025-12-26
 
 ### 📅 Productivity Database Integration

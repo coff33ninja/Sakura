@@ -23,11 +23,12 @@
 
 ## ✨ Key Features
 
-### 💻 Developer Tools (33 Actions)
+### 💻 Developer Tools (47 Actions)
 - Git operations (status, add, commit, push, pull, branch, checkout, log, diff, clone, init)
 - Code execution (Python, JavaScript, PowerShell, Batch)
 - Package management (pip, npm, winget)
-- SSH connections with saved profiles
+- Connection profiles (SSH, SMB, FTP/SFTP, RDP) with database storage
+- SSH (OpenSSH, PuTTY), SMB shares, FTP/SFTP, RDP
 
 ### 📅 Productivity (27 Actions)
 - Reminders with Windows notifications
@@ -241,9 +242,9 @@ start.bat
 | `smart_home` | 21 | Home Assistant (lights, switches, fans, covers, scenes, automations, energy) |
 | `mcp_client` | 3 | MCP server connection (fixed protocol, 60s timeout) |
 | `productivity` | 27 | Reminders, timers, notes, to-do lists with FTS search |
-| `developer` | 33 | Git, code execution, packages, SSH |
+| `developer` | 47 | Git, code execution, packages, SSH/SMB/FTP/RDP connections |
 
-**Total: 177 tool actions**
+**Total: 191 tool actions**
 
 ## 📁 Project Structure
 
@@ -611,11 +612,12 @@ This is the first stable release of Sakura, consolidating all development work i
 - Virtual desktop control
 - Power management (sleep, shutdown, restart)
 
-#### 💻 Developer Tools (33 Actions)
+#### 💻 Developer Tools (47 Actions)
 - Git operations (status, add, commit, push, pull, branch, checkout, log, diff, clone, init)
 - Code execution (Python, JavaScript, PowerShell, Batch)
 - Package management (pip, npm, winget)
-- SSH connections with saved profiles
+- Connection profiles (SSH, SMB, FTP/SFTP, RDP)
+- SSH (OpenSSH, PuTTY), SMB shares, FTP/SFTP, RDP
 
 #### 📅 Productivity (27 Actions)
 - Reminders with Windows notifications

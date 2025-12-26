@@ -298,6 +298,29 @@ class DatabaseManager:
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
         
+        -- Connection Profiles: SSH, SMB, FTP, RDP, etc.
+        CREATE TABLE IF NOT EXISTS connection_profiles (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            profile_id TEXT UNIQUE NOT NULL,   -- External ID like 'ssh_1_123456'
+            profile_type TEXT NOT NULL,        -- ssh, smb, ftp, sftp, rdp
+            name TEXT NOT NULL,                -- User-friendly name
+            host TEXT NOT NULL,
+            port INTEGER,
+            username TEXT,
+            auth_type TEXT DEFAULT 'password', -- password, key, ntlm, kerberos
+            key_path TEXT,                     -- Path to SSH key or certificate
+            domain TEXT,                       -- For SMB/RDP Windows domain
+            share_path TEXT,                   -- For SMB share path
+            remote_path TEXT,                  -- Default remote directory
+            local_path TEXT,                   -- Default local directory for transfers
+            use_ssl INTEGER DEFAULT 0,         -- For FTP -> FTPS
+            passive_mode INTEGER DEFAULT 1,    -- For FTP passive mode
+            extra_config TEXT,                 -- JSON for type-specific options
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            last_used TIMESTAMP,
+            use_count INTEGER DEFAULT 0
+        );
+        
         -- Create indexes for common queries
         CREATE INDEX IF NOT EXISTS idx_events_subject ON events(subject_id);
         CREATE INDEX IF NOT EXISTS idx_events_type ON events(event_type);
@@ -328,6 +351,9 @@ class DatabaseManager:
         CREATE INDEX IF NOT EXISTS idx_todos_priority ON todos(priority);
         CREATE INDEX IF NOT EXISTS idx_todos_due_date ON todos(due_date);
         CREATE INDEX IF NOT EXISTS idx_todos_created ON todos(created_at);
+        CREATE INDEX IF NOT EXISTS idx_conn_profiles_type ON connection_profiles(profile_type);
+        CREATE INDEX IF NOT EXISTS idx_conn_profiles_host ON connection_profiles(host);
+        CREATE INDEX IF NOT EXISTS idx_conn_profiles_last_used ON connection_profiles(last_used);
         
         -- FTS5 Full-Text Search virtual table for fast searching
         CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(
