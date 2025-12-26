@@ -73,3 +73,15 @@ test_*.py
 backups/sakura_wake_word/Sakura_en_windows_v4_0_0.ppn
 conversation_context.json
 error_recovery_log.json
+tests/
+.hypothesis/
+.gitignore
+sakura.db
+.gitignore
+sakura.db-wal
+user_preferences.json
+suggestion_history.json
+sakura.db-shm
+pytest.ini
+intent_learning.json
+background_tasks_history.json
