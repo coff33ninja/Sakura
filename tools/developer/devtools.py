@@ -11,7 +11,7 @@ Rules followed:
 import asyncio
 import logging
 import os
-import subprocess
+import subprocess  # Used safely: list format, shell=False, timeout protection, asyncio.to_thread
 import shutil
 from typing import Dict, Any, Optional, List
 from dataclasses import dataclass, field, asdict
@@ -1387,9 +1387,9 @@ class DeveloperTools(BaseTool):
             # Update in memory
             if profile_id in self.profiles:
                 profile = self.profiles[profile_id]
-                for field, value in kwargs.items():
-                    if field in update_fields and value is not None:
-                        setattr(profile, field, value)
+                for field_name, value in kwargs.items():
+                    if field_name in update_fields and value is not None:
+                        setattr(profile, field_name, value)
             
             await self._save_profiles()
             

@@ -5,7 +5,7 @@ Uses native Windows APIs and optional MCP servers for extended functionality
 """
 import asyncio
 import os
-import subprocess
+import subprocess  # Used safely: list format, shell=False, timeout protection
 import logging
 import ctypes
 import json

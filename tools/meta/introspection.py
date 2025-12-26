@@ -11,7 +11,7 @@ Rules followed:
 import asyncio
 import logging
 import os
-import subprocess
+import subprocess  # Used safely: list format, shell=False, timeout protection
 import json
 from typing import Dict, Any, Optional, List
 from dataclasses import dataclass, asdict
@@ -695,7 +695,7 @@ class MetaTools(BaseTool):
             if research_results["builtin_capabilities"].get("can_handle"):
                 research_results["recommendation"] = "USE_BUILTIN"
                 research_results["recommendation_detail"] = f"Use existing tools: {research_results['builtin_capabilities']['actions'][:3]}"
-            elif research_results["extension_scripts"]:
+            elif research_results["extension_scripts"] and len(research_results["extension_scripts"]) > 0:
                 research_results["recommendation"] = "USE_EXTENSION"
                 research_results["recommendation_detail"] = f"Use existing extension script: {research_results['extension_scripts'][0]['name']}"
             elif research_results["mcp_capabilities"]:

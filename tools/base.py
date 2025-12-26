@@ -67,8 +67,16 @@ class BaseTool(ABC):
     dependencies: List[ToolDependency] = []  # Override in subclasses
     
     @abstractmethod
-    async def execute(self, **kwargs) -> ToolResult:
-        """Execute the tool with given parameters"""
+    async def execute(self, action: str = None, **kwargs) -> ToolResult:
+        """Execute the tool with given parameters.
+        
+        Args:
+            action: The action/command to execute (optional for tools without actions)
+            **kwargs: Additional parameters specific to the tool/action
+            
+        Returns:
+            ToolResult: Result of the execution
+        """
         pass
     
     @abstractmethod

@@ -4,7 +4,7 @@ Allows Sakura to discover system info, installed apps, and learn about the envir
 """
 import asyncio
 import os
-import subprocess
+import subprocess  # Used safely: list format, shell=False, timeout protection
 import logging
 import ctypes
 import json

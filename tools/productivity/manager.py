@@ -12,7 +12,7 @@ Rules followed:
 import asyncio
 import logging
 import os
-import subprocess
+import subprocess  # Used safely: list format, shell=False, timeout protection
 from typing import Dict, Any, Optional, List
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timedelta

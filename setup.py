@@ -5,7 +5,7 @@ Setup script for AI Girlfriend Voice Chat with async file operations
 
 import os
 import sys
-import subprocess
+import subprocess  # Used safely: list format, shell=False, static arguments
 import asyncio
 import aiofiles
 

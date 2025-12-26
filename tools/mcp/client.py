@@ -218,6 +218,7 @@ class MCPClient(BaseTool):
                 },
                 "id": 0
             }) + "\n"
+            # Safe: JSON protocol messages with static content, properly escaped by json.dumps()
             process.stdin.write(init_request.encode())
             await process.stdin.drain()
             
