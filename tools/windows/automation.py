@@ -143,6 +143,14 @@ class WindowsAutomation(BaseTool):
                 error="Not running on Windows"
             )
         
+        # Check if action requires elevated privileges
+        priv_ok, priv_msg = await self._check_privileges(action)
+        if not priv_ok:
+            return ToolResult(
+                status=ToolStatus.ERROR,
+                error=priv_msg
+            )
+        
         actions = {
             "run_command": self._run_command,
             "open_app": self._open_app,
@@ -202,6 +210,39 @@ class WindowsAutomation(BaseTool):
             )
         
         return await actions[action](**kwargs)
+    
+    async def _check_privileges(self, action: str) -> tuple[bool, str]:
+        """
+        Check if the requested action requires elevated privileges.
+        
+        Returns:
+            tuple: (success: bool, message: str)
+        """
+        # Actions that require admin privileges
+        privileged_actions = {
+            "kill_process": "Kill processes",
+            "execute_script": "Execute scripts",
+            "power_action": "Control system power",
+            "virtual_desktop": "Manage virtual desktops",
+            "lock_screen": "Lock/unlock screen",
+        }
+        
+        if action not in privileged_actions:
+            return True, ""
+        
+        # Check if running with admin privileges
+        try:
+            is_admin = ctypes.windll.shell32.IsUserAnAdmin()
+            if not is_admin:
+                action_name = privileged_actions[action]
+                return False, f"Action '{action}' ({action_name}) requires Administrator privileges. Run Sakura as Administrator."
+        except Exception as e:
+            logging.warning(f"Could not check admin privileges: {e}")
+            # If we can't check, assume we might not have privileges and warn
+            action_name = privileged_actions.get(action, action)
+            return False, f"Could not verify Administrator privileges for '{action}'. This action may require elevated permissions."
+        
+        return True, ""
     
     async def _run_command(self, command: str, shell: str = "powershell", timeout: int = 30) -> ToolResult:
         """Run a shell command (PowerShell or CMD)"""

@@ -3,7 +3,7 @@ Sakura Tools Package
 Extensible tools and integrations for Sakura AI
 """
 
-from .base import BaseTool, ToolResult, ToolStatus, ToolRegistry
+from .base import BaseTool, ToolResult, ToolStatus, ToolRegistry, ToolMetrics
 
 # Import all tools
 from .web import WebSearch, WebFetch
@@ -24,6 +24,7 @@ __all__ = [
     'ToolResult',
     'ToolStatus',
     'ToolRegistry',
+    'ToolMetrics',
     # Web tools
     'WebSearch',
     'WebFetch',

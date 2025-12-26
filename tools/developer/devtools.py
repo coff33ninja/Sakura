@@ -64,6 +64,33 @@ class ConnectionProfile:
     last_used: Optional[str] = None
     use_count: int = 0
     
+    def __post_init__(self):
+        """Validate connection profile after initialization"""
+        # Required fields
+        if not self.id or not self.id.strip():
+            raise ValueError("Profile ID is required and cannot be empty")
+        if not self.name or not self.name.strip():
+            raise ValueError("Profile name is required and cannot be empty")
+        if not self.host or not self.host.strip():
+            raise ValueError("Host is required and cannot be empty")
+        if not self.profile_type or self.profile_type not in ["ssh", "sftp", "smb", "ftp", "ftps", "rdp"]:
+            raise ValueError(f"Invalid profile_type: {self.profile_type}. Must be one of: ssh, sftp, smb, ftp, ftps, rdp")
+        
+        # Port validation
+        if self.port < 0 or self.port > 65535:
+            raise ValueError(f"Invalid port: {self.port}. Port must be between 0 and 65535")
+        
+        # Auth type validation
+        valid_auth_types = ["password", "key", "ntlm", "kerberos"]
+        if self.auth_type not in valid_auth_types:
+            raise ValueError(f"Invalid auth_type: {self.auth_type}. Must be one of: {', '.join(valid_auth_types)}")
+        
+        # Key auth requires key_path
+        if self.auth_type == "key" and (not self.key_path or not self.key_path.strip()):
+            raise ValueError("auth_type='key' requires key_path to be set")
+        
+        # Default port assignment happens in get_default_port, no validation needed here
+    
     def get_default_port(self) -> int:
         """Get default port for profile type"""
         defaults = {

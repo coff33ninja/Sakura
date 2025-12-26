@@ -1,10 +1,12 @@
 """
 Smart Home Controller for Sakura
 Control lights, music, temperature via Home Assistant API - fully async
+Implements device cache with TTL to refresh periodically
 """
 import asyncio
 import os
 import logging
+import time
 from typing import Dict, Any, Optional, List
 import httpx
 from ..base import BaseTool, ToolResult, ToolStatus
@@ -22,6 +24,10 @@ class SmartHomeController(BaseTool):
         self.devices: Dict[str, Any] = {}
         self.client: Optional[httpx.AsyncClient] = None
         self._lock = asyncio.Lock()
+        
+        # Device cache TTL (5 minutes)
+        self._device_cache_time: Optional[float] = None
+        self._device_cache_ttl: float = 300.0
     
     async def initialize(self) -> bool:
         """Initialize async Home Assistant connection"""
@@ -42,16 +48,41 @@ class SmartHomeController(BaseTool):
         
         # Test connection and get devices
         try:
-            response = await self.client.get("/api/states")
-            if response.status_code == 200:
-                states = response.json()
-                self.devices = {s["entity_id"]: s for s in states}
-                logging.info(f"Smart home connected (async): {len(self.devices)} devices")
-                return True
+            await self._refresh_devices()
+            logging.info(f"Smart home connected (async): {len(self.devices)} devices")
+            return True
         except Exception as e:
             logging.error(f"Home Assistant connection failed: {e}")
         
         self.enabled = False
+        return False
+    
+    async def _refresh_devices(self, force: bool = False) -> bool:
+        """Refresh device list from Home Assistant with TTL caching"""
+        async with self._lock:
+            now = time.time()
+            
+            # Check if cache is still valid
+            if (not force and 
+                self._device_cache_time is not None and 
+                (now - self._device_cache_time) < self._device_cache_ttl):
+                logging.debug("Using cached device list")
+                return True
+            
+            if not self.client:
+                return False
+            
+            try:
+                response = await self.client.get("/api/states")
+                if response.status_code == 200:
+                    states = response.json()
+                    self.devices = {s["entity_id"]: s for s in states}
+                    self._device_cache_time = now
+                    logging.debug(f"Refreshed device cache: {len(self.devices)} devices")
+                    return True
+            except Exception as e:
+                logging.error(f"Failed to refresh devices: {e}")
+        
         return False
     
     async def execute(self, action: str, device: str = "", **kwargs) -> ToolResult:

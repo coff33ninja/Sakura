@@ -66,7 +66,47 @@ class AuthenticationResult:
 
 
 class SpeakerAuthentication(BaseTool):
-    """Speaker recognition and authentication tool"""
+    """Speaker recognition and authentication tool
+    
+    Voice-based authentication system that learns and recognizes authorized speakers.
+    
+    Modes of Operation:
+        DISABLED: No authentication checks, respond to anyone
+        OPTIONAL: Attempt authentication but continue if it fails
+        STRICT: Only respond to authenticated speakers, reject unknown voices
+        TRAINING: Record speaker samples to build voice profile
+    
+    Example Usage:
+        # Initialize speaker auth
+        auth = SpeakerAuthentication()
+        await auth.initialize()
+        
+        # Train a speaker
+        await auth.train_speaker(
+            speaker_id="user_001",
+            name="John",
+            audio_chunks=[...audio_data...],
+            is_owner=True
+        )
+        
+        # Authenticate incoming audio
+        result = await auth.authenticate(audio_chunk)
+        if result.authenticated:
+            # Process request from identified speaker
+            process_request(result.speaker_id)
+        else:
+            # Unknown or unauthorized speaker
+            reject_request(f"Speaker not recognized. Confidence: {result.confidence}")
+    
+    Features:
+        - Voice profile training with multiple samples
+        - Real-time speaker authentication
+        - Confidence scoring with configurable thresholds
+        - Owner identification for privilege operations
+        - Audio quality assessment
+        - Database persistence with JSON fallback
+        - Authentication logging and history
+    """
     
     name = "speaker_recognition"
     description = "Voice authentication - learn your voice and only respond to you"

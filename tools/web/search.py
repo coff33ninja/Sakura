@@ -1,9 +1,11 @@
 """
 Web Search Tool for Sakura
 Uses DuckDuckGo for free web search - fully async
+Implements rate limiting to prevent IP blocks
 """
 import asyncio
 import logging
+import time
 import urllib.parse
 from typing import Dict, Any, Optional, List
 import httpx
@@ -19,6 +21,8 @@ class WebSearch(BaseTool):
         self.api_key = api_key  # Reserved for future paid APIs
         self.client: Optional[httpx.AsyncClient] = None
         self._lock = asyncio.Lock()
+        self._last_request_time: float = 0.0
+        self._min_interval: float = 1.0  # Minimum 1 second between requests to prevent IP blocks
     
     async def initialize(self) -> bool:
         """Initialize async HTTP client"""
@@ -27,7 +31,7 @@ class WebSearch(BaseTool):
                 timeout=10.0,
                 headers={"User-Agent": "Sakura-AI/1.0"}
             )
-            logging.info("Web search initialized (async)")
+            logging.info("Web search initialized (async) with rate limiting (1s interval)")
         return True
     
     async def execute(self, query: str, num_results: int = 5) -> ToolResult:
@@ -35,8 +39,19 @@ class WebSearch(BaseTool):
         async with self._lock:
             if not self.client:
                 await self.initialize()
+            
+            # Rate limiting: ensure minimum interval between requests
+            elapsed = time.time() - self._last_request_time
+            if elapsed < self._min_interval:
+                wait_time = self._min_interval - elapsed
+                logging.debug(f"Rate limit: waiting {wait_time:.2f}s before search")
+                await asyncio.sleep(wait_time)
         
         try:
+            # Update last request time
+            async with self._lock:
+                self._last_request_time = time.time()
+            
             # DuckDuckGo Instant Answer API (free, no key needed)
             encoded_query = urllib.parse.quote(query)
             url = f"https://api.duckduckgo.com/?q={encoded_query}&format=json&no_html=1"
