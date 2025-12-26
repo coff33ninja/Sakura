@@ -752,8 +752,8 @@ class UserPreferences:
                 if self._db and pref.db_id:
                     try:
                         await self._db.delete("user_info", "id = ?", (pref.db_id,))
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logging.warning(f"Failed to delete expired preference from DB: {e}")
                 del self._preferences[key]
                 logging.info(f"Expired preference: {key}")
             

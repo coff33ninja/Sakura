@@ -16,7 +16,7 @@ from datetime import datetime, timedelta, time
 from enum import Enum
 import json
 import aiofiles
-import random
+import secrets
 
 
 class SuggestionType(Enum):
@@ -281,8 +281,8 @@ class SuggestionEngine:
             candidates.sort(key=lambda x: (x[0].priority.value, x[1]), reverse=True)
             
             # Pick the best one (with some randomness for variety)
-            if len(candidates) > 1 and random.random() < 0.3:
-                selected = random.choice(candidates[:3])[0]
+            if len(candidates) > 1 and (secrets.randbelow(100) / 100.0) < 0.3:
+                selected = candidates[secrets.randbelow(min(3, len(candidates)))][0]
             else:
                 selected = candidates[0][0]
             

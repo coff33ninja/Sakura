@@ -413,8 +413,8 @@ class DiscordBot(BaseTool):
             if self.voice_client:
                 try:
                     await self.voice_client.disconnect()
-                except Exception:
-                    pass
+                except Exception as e:
+                    logging.debug(f"Voice disconnect error: {e}")
                 self.voice_client = None
 
             # Stop bot

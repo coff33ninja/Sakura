@@ -7,7 +7,7 @@ A flirty, unfiltered AI girlfriend powered by Gemini Live API
 import asyncio
 import logging
 import os
-import random
+import secrets
 import signal
 import sys
 from dotenv import load_dotenv
@@ -472,11 +472,11 @@ COMMON MCP SERVERS (run with windows run_command "uvx <server>"):
                         
                         # Randomly make Sakura speak a greeting (configurable probability for human-like feel)
                         wake_greeting_prob = float(os.getenv('WAKE_GREETING_PROBABILITY', '0.7'))
-                        if random.random() < wake_greeting_prob:
+                    if secrets.randbelow(100) / 100.0 < wake_greeting_prob:
                             try:
                                 # Get a random wake response based on personality
                                 wake_responses = get_wake_responses()
-                                greeting = random.choice(wake_responses)
+                                greeting = wake_responses[secrets.randbelow(len(wake_responses))]
                                 
                                 # Send to Gemini so Sakura speaks it naturally
                                 await self.gemini_client.send_text(
@@ -622,7 +622,8 @@ COMMON MCP SERVERS (run with windows run_command "uvx <server>"):
                     if not insights.get("is_reliable"):
                         tool_warning = insights.get("warning")
                         logging.warning(f"⚠️ Tool reliability warning: {tool_warning}")
-                except Exception:
+                except Exception as e:
+                    logging.debug(f"Could not retrieve tool insights: {e}")
                     pass
             
             logging.info(f"🔧 Tool call: {tool_name} with args: {tool_args}" + (" [BACKGROUND]" if run_in_background else ""))

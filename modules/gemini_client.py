@@ -2,7 +2,7 @@ import asyncio
 import logging
 from typing import Optional, AsyncGenerator, Dict, Any, List
 from google import genai
-import random
+import secrets
 from datetime import datetime, timedelta
 from .persona import get_goodbye_responses
 from .api_key_manager import APIKeyManager, KeyStatus
@@ -227,7 +227,8 @@ class GeminiVoiceClient:
     async def send_goodbye(self):
         """Send a goodbye message via text input"""
         if self.is_connected and self.session:
-            goodbye_msg = random.choice(get_goodbye_responses())
+            goodbye_responses = get_goodbye_responses()
+            goodbye_msg = goodbye_responses[secrets.randbelow(len(goodbye_responses))]
             try:
                 # Use send() with text content for Gemini Live API
                 await self.session.send(input=goodbye_msg, end_of_turn=True)
@@ -328,8 +329,8 @@ class GeminiVoiceClient:
                 if self._session_context:
                     try:
                         await self._session_context.__aexit__(None, None, None)
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logging.debug(f"Session cleanup error: {e}")
                     self._session_context = None
                     self.session = None
                 
@@ -425,7 +426,7 @@ class GeminiVoiceClient:
                 
                 # Backoff before retrying to avoid hot-looping; add jitter
                 backoff = min(self._base_backoff_seconds * (2 ** attempt), self._max_backoff_seconds)
-                jitter = random.uniform(0, backoff * 0.5)
+                jitter = (secrets.randbelow(int(backoff * 50)) / 100.0)
                 await asyncio.sleep(backoff + jitter)
 
                 # Try next key if available (respect rotation cooldown)

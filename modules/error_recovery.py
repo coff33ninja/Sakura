@@ -10,7 +10,7 @@ Rules followed:
 """
 import asyncio
 import logging
-import random
+import secrets
 import re
 from typing import Dict, Any, List, Optional, Callable, Awaitable, Tuple
 from dataclasses import dataclass, field
@@ -496,7 +496,9 @@ class ErrorRecovery:
             )
             
             if config.jitter:
-                delay_ms = delay_ms * (0.5 + random.random())
+                # Add jitter: multiply by random value between 0.5 and 1.5
+                jitter_factor = 0.5 + (secrets.randbelow(100) / 100.0)
+                delay_ms = delay_ms * jitter_factor
             
             logging.info(f"Retry {attempt + 1}/{config.max_retries} for {tool_name}.{action} after {delay_ms:.0f}ms")
             

@@ -122,7 +122,8 @@ class WindowsAutomation(BaseTool):
             self.everything_available = 'Everything.exe' in result.stdout
             if self.everything_available:
                 logging.info("Everything search detected")
-        except Exception:
+        except Exception as e:
+            logging.debug(f"Everything availability check failed: {e}")
             pass
     
     async def initialize(self) -> bool:

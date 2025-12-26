@@ -1410,8 +1410,8 @@ class DeveloperTools(BaseTool):
                        WHERE profile_id = ?""",
                     (now, profile_id)
                 )
-            except Exception:
-                pass
+            except Exception as e:
+                logging.debug(f"Failed to update profile last_used: {e}")
         
         if profile_id in self.profiles:
             self.profiles[profile_id].last_used = now
@@ -2313,11 +2313,20 @@ class DeveloperTools(BaseTool):
             results: List[Dict[str, Any]] = []
             
             for i, cmd in enumerate(commands):
+                # Convert string commands to list format for security
+                if isinstance(cmd, str):
+                    if self.is_windows:
+                        cmd_list = ["cmd", "/c", cmd]
+                    else:
+                        cmd_list = ["/bin/sh", "-c", cmd]
+                else:
+                    cmd_list = cmd
+                
                 result = await asyncio.to_thread(
                     subprocess.run,
-                    cmd if isinstance(cmd, list) else ["cmd", "/c", cmd] if self.is_windows else ["sh", "-c", cmd],
+                    cmd_list,
                     capture_output=True, text=True, timeout=60, cwd=path,
-                    shell=isinstance(cmd, str)
+                    shell=False
                 )
                 
                 cmd_result = {

@@ -3,7 +3,7 @@ import numpy as np
 import os
 from typing import List, Optional
 import logging
-import random
+import secrets
 from .persona import get_wake_responses
 
 # Built-in Picovoice keywords (no .ppn file needed)
@@ -148,7 +148,7 @@ class WakeWordDetector:
                     detected_keyword = self.keywords[keyword_index]
                     self.is_listening = True
                     wake_responses = get_wake_responses()
-                    wake_response = random.choice(wake_responses)
+                    wake_response = wake_responses[secrets.randbelow(len(wake_responses))]
                     logging.info(f"Wake word '{detected_keyword}' detected")
                     # Clear buffer after detection to avoid re-triggering
                     self._audio_buffer = np.array([], dtype=np.int16)

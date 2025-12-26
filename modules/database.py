@@ -615,6 +615,11 @@ class DatabaseManager:
             return 0
         
         async with self._lock:
+            # Validate table name to prevent SQL injection
+            if not self._is_valid_table_name(table):
+                logging.error(f"Invalid table name: {table}")
+                return 0
+            
             query = f"SELECT COUNT(*) as count FROM {table}"
             if where:
                 query += f" WHERE {where}"
@@ -776,8 +781,8 @@ class DatabaseManager:
         await self._add_to_fts(content, source, source_id)
         try:
             await self._connection.commit()
-        except Exception:
-            pass
+        except Exception as e:
+            logging.debug(f"Failed to commit FTS index: {e}")
     
     # ==================== Specialized Queries ====================
     
