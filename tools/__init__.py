@@ -16,6 +16,7 @@ from .system_info import SystemDiscovery
 from .productivity import ProductivityManager
 from .developer import DeveloperTools
 from .meta import MetaTools
+from .speaker_recognition import SpeakerAuthentication
 
 __all__ = [
     # Base classes
@@ -44,6 +45,8 @@ __all__ = [
     'DeveloperTools',
     # Meta (self-introspection)
     'MetaTools',
+    # Speaker Recognition
+    'SpeakerAuthentication',
 ]
 
 
@@ -62,6 +65,7 @@ async def create_tool_registry() -> ToolRegistry:
     await registry.register(SystemDiscovery())
     await registry.register(ProductivityManager())
     await registry.register(DeveloperTools())
+    await registry.register(SpeakerAuthentication())
     
     # Meta tools need registry reference for introspection
     meta_tools = MetaTools(tool_registry=registry)

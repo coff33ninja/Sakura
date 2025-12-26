@@ -45,12 +45,13 @@
 - To-do lists with priorities, due dates, and completion history
 - Task history tracking ("what did I complete last month?")
 
-### 🎙️ Real-Time Voice Conversation
+### 🎙️ Real-Time Voice Conversation & Authentication
 - **Gemini Live API** - Natural, low-latency voice interaction
 - **Interruption support** - Talk naturally, interrupt anytime
 - **Multiple voices** - Female (Aoede, Kore), Male (Charon, Fenrir), Neutral (Puck)
 - **Configurable personalities** - Female & Male personas with gender-matched voices
 - **Voice/Persona validation** - Warns if voice gender doesn't match persona
+- **🔐 Speaker Recognition** - Only respond to YOUR voice (5-10 samples to train)
 
 ### Complete Windows Control (46 Actions)
 - **Run commands** - PowerShell, CMD, any command

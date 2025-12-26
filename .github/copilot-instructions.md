@@ -21,7 +21,23 @@ Sakura is a fully autonomous Windows AI assistant featuring Gemini Live API voic
 ### Rule #3: Python 3.12 Required
 - Only tested version for this project
 - Maintain 3.8+ compatibility only if cross-version work required
+- Use 3.12 features where beneficial (e.g. `typing` improvements)
+- Test with Python 3.12 interpreter in the venv
 
+### Rule #4: Type Hints Everywhere
+- All functions/methods must have complete type hints
+- Use `from typing import ...` for complex types
+- Maintain type hinting consistency across modules
+- Use `mypy` for type checking during development
+
+### Rule #5: Comprehensive Docstrings
+- Every class, method, and function must have a docstring
+- Follow Google-style or NumPy-style docstrings consistently
+- Include parameter and return type descriptions
+- Update docstrings when functionality changes
+
+### Rule #6: Follow the version control workflow
+- Follow CHANGELOG.md for versioning
 ## Architecture Overview
 
 ### Core Component Lifecycle
