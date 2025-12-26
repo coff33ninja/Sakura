@@ -496,7 +496,7 @@ COMMON MCP SERVERS (run with windows run_command "uvx <server>"):
                         logging.info("Wake word detected - now listening")
                         
                         # Randomly make Sakura speak a greeting (configurable probability for human-like feel)
-                    if secrets.randbelow(100) / 100.0 < wake_greeting_prob:
+                        if secrets.randbelow(100) / 100.0 < wake_greeting_prob:
                             try:
                                 # Get a random wake response based on personality
                                 wake_responses = get_wake_responses()
