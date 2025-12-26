@@ -15,6 +15,7 @@ from .windows import WindowsAutomation
 from .system_info import SystemDiscovery
 from .productivity import ProductivityManager
 from .developer import DeveloperTools
+from .meta import MetaTools
 
 __all__ = [
     # Base classes
@@ -41,6 +42,8 @@ __all__ = [
     'ProductivityManager',
     # Developer
     'DeveloperTools',
+    # Meta (self-introspection)
+    'MetaTools',
 ]
 
 
@@ -59,6 +62,10 @@ async def create_tool_registry() -> ToolRegistry:
     await registry.register(SystemDiscovery())
     await registry.register(ProductivityManager())
     await registry.register(DeveloperTools())
+    
+    # Meta tools need registry reference for introspection
+    meta_tools = MetaTools(tool_registry=registry)
+    await registry.register(meta_tools)
     
     # Initialize all tools
     await registry.initialize_all()

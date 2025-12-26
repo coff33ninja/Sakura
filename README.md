@@ -30,6 +30,14 @@
 - Connection profiles (SSH, SMB, FTP/SFTP, RDP) with database storage
 - SSH (OpenSSH, PuTTY), SMB shares, FTP/SFTP, RDP
 
+### 🧠 Meta Tools - Self-Awareness (15 Actions)
+- **Introspection** - Understand all 206 available actions
+- **Capability search** - Find tools matching user requests
+- **Gap analysis** - Identify when extension scripts are needed
+- **Script generation** - Create Python/PowerShell/Batch/JS extensions on-the-fly
+- **Script execution** - Run and track extension scripts with success metrics
+- **Self-improvement** - Learn from script usage patterns
+
 ### 📅 Productivity (27 Actions)
 - Reminders with Windows notifications
 - Countdown timers and stopwatch
@@ -243,8 +251,9 @@ start.bat
 | `mcp_client` | 3 | MCP server connection (fixed protocol, 60s timeout) |
 | `productivity` | 27 | Reminders, timers, notes, to-do lists with FTS search |
 | `developer` | 47 | Git, code execution, packages, SSH/SMB/FTP/RDP connections |
+| `meta` | 15 | Self-introspection, capability search, extension script generation |
 
-**Total: 191 tool actions**
+**Total: 206 tool actions**
 
 ## 📁 Project Structure
 

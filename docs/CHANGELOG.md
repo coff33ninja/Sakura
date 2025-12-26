@@ -5,6 +5,58 @@ All notable changes to Sakura AI will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.3] - 2025-12-26
+
+### 🧠 Meta Tools - Self-Awareness & Capability Extension
+
+Sakura can now understand its own capabilities and extend itself with custom scripts.
+
+#### Added
+
+**Meta Tools (Phase 11) - 15 New Actions**
+
+*Introspection*
+- `list_all_tools` - List all available tools and their actions
+- `get_tool_details` - Get detailed info about a specific tool/action
+- `search_capabilities` - Search for capabilities matching a query
+- `analyze_request` - Analyze if existing tools can handle a request
+- `get_capability_summary` - Comprehensive summary for AI self-awareness
+
+*Script Generation*
+- `generate_script` - Create extension scripts (Python, PowerShell, Batch, JS)
+- `save_script` - Update existing script code
+- `list_scripts` - List all extension scripts
+- `get_script` - Get script details and code
+- `delete_script` - Remove an extension script
+- `verify_script` - Mark script as user-verified
+
+*Script Execution*
+- `run_script` - Execute an extension script with arguments
+- `test_script` - Syntax check without execution
+
+*Learning*
+- `find_similar_scripts` - Find scripts similar to a description
+- `suggest_extension` - Suggest what script would fill a capability gap
+
+**Database Integration**
+- `extension_scripts` table for script tracking
+- Tracks: use_count, success_count, failure_count, is_verified
+- Trigger phrases for natural language activation
+
+#### Changed
+- `tools/__init__.py` - Registered MetaTools with registry reference
+- `modules/database.py` - Added extension_scripts table + indexes
+- Total tool actions: 206 (up from 191)
+- New tool category: Meta (11th category)
+
+#### Technical
+- Scripts stored in `~/Documents/{ASSISTANT_NAME}/scripts/extensions/`
+- Auto-generated headers with metadata
+- JSON backup of script index
+- Syntax validation before execution
+
+---
+
 ## [1.2.2] - 2025-12-26
 
 ### 🔌 Connection Profiles System

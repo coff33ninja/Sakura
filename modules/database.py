@@ -321,6 +321,25 @@ class DatabaseManager:
             use_count INTEGER DEFAULT 0
         );
         
+        -- Extension Scripts: AI-generated scripts to extend capabilities
+        CREATE TABLE IF NOT EXISTS extension_scripts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            script_id TEXT UNIQUE NOT NULL,    -- External ID like 'ext_spotify_123456'
+            name TEXT NOT NULL,                -- Script name
+            description TEXT,                  -- What the script does
+            language TEXT NOT NULL,            -- python, powershell, batch, javascript
+            code TEXT NOT NULL,                -- The actual script code
+            category TEXT,                     -- Capability category (media, automation, etc.)
+            trigger_phrases TEXT,              -- JSON array of trigger phrases
+            parameters TEXT,                   -- JSON object of expected parameters
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            last_used TIMESTAMP,
+            use_count INTEGER DEFAULT 0,
+            success_count INTEGER DEFAULT 0,
+            failure_count INTEGER DEFAULT 0,
+            is_verified INTEGER DEFAULT 0      -- User verified as working
+        );
+        
         -- Create indexes for common queries
         CREATE INDEX IF NOT EXISTS idx_events_subject ON events(subject_id);
         CREATE INDEX IF NOT EXISTS idx_events_type ON events(event_type);
@@ -354,6 +373,10 @@ class DatabaseManager:
         CREATE INDEX IF NOT EXISTS idx_conn_profiles_type ON connection_profiles(profile_type);
         CREATE INDEX IF NOT EXISTS idx_conn_profiles_host ON connection_profiles(host);
         CREATE INDEX IF NOT EXISTS idx_conn_profiles_last_used ON connection_profiles(last_used);
+        CREATE INDEX IF NOT EXISTS idx_ext_scripts_name ON extension_scripts(name);
+        CREATE INDEX IF NOT EXISTS idx_ext_scripts_category ON extension_scripts(category);
+        CREATE INDEX IF NOT EXISTS idx_ext_scripts_language ON extension_scripts(language);
+        CREATE INDEX IF NOT EXISTS idx_ext_scripts_verified ON extension_scripts(is_verified);
         
         -- FTS5 Full-Text Search virtual table for fast searching
         CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(
