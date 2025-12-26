@@ -7,6 +7,7 @@ A flirty, unfiltered AI girlfriend powered by Gemini Live API
 import asyncio
 import logging
 import os
+import random
 import signal
 import sys
 from dotenv import load_dotenv
@@ -18,6 +19,7 @@ from modules import (
     BackgroundTaskManager
 )
 from modules.conversation_context import ConversationContext
+from modules.persona import get_wake_responses
 from tools import create_tool_registry, ToolRegistry
 
 # Load environment variables
@@ -447,6 +449,22 @@ COMMON MCP SERVERS (run with windows run_command "uvx <server>"):
                     if wake_response:
                         print(f"💋 {wake_response}")
                         logging.info("Wake word detected - now listening")
+                        
+                        # Randomly make Sakura speak a greeting (configurable probability for human-like feel)
+                        wake_greeting_prob = float(os.getenv('WAKE_GREETING_PROBABILITY', '0.7'))
+                        if random.random() < wake_greeting_prob:
+                            try:
+                                # Get a random wake response based on personality
+                                wake_responses = get_wake_responses()
+                                greeting = random.choice(wake_responses)
+                                
+                                # Send to Gemini so Sakura speaks it naturally
+                                await self.gemini_client.send_text(
+                                    f"[WAKE WORD DETECTED - Greet the user with this energy/style, you can vary it slightly]: {greeting}"
+                                )
+                                logging.info(f"Wake greeting sent: {greeting}")
+                            except Exception as e:
+                                logging.debug(f"Could not send wake greeting: {e}")
                 
                 # Send audio to Gemini if listening
                 if (not self.config.wake_word.enabled or 

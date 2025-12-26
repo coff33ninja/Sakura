@@ -15,6 +15,52 @@ Sakura v1.0.0 - A fully autonomous AI assistant with real-time voice interaction
 
 ---
 
+### Latest Updates (2025-12-25)
+
+#### 🔍 Enhanced File Search (`find_file`)
+Major improvements to file discovery across all drives:
+
+**Path Handling**
+- User shortcuts: `Documents`, `Downloads`, `Desktop`, `Pictures`, `Music`, `Videos`, `AppData`, `Home`
+- Environment variables: `%USERPROFILE%`, `%APPDATA%`, `%LOCALAPPDATA%`, `%TEMP%`, etc.
+- UNC/network paths: `\\server\share\folder`
+- Proper escaping for paths with spaces and special characters
+
+**Search Scope**
+- Added `LocalAppData\Programs` (Discord, VS Code user installs)
+- Added `PortableApps` and portable app locations
+- New `include_removable` parameter for USB drives
+- Configurable `max_depth` parameter (default 6)
+- Enhanced priority paths: Steam, SteamLibrary, GOG, Epic, Origin, Ubisoft, Battle.net
+
+**Smart Folder Hints**
+- New `folder_hint` parameter: `folder_hint="Steam"` + `search_drive="D"` → searches `D:\Steam`
+- Fuzzy folder matching (exact → contains → starts-with)
+- Combines user intent with drive specification
+
+**Symlinks & Junctions**
+- New `follow_links` parameter (default true)
+- Results include `IsSymlink` and `LinkTarget` fields
+- Properly follows Steam library junctions
+
+**PATH Search**
+- New `search_path_env` parameter
+- Auto-searches PATH for executable file types
+- Environment variable expansion in paths
+
+#### 🎙️ Wake Word Personality Responses
+- Sakura now **speaks** a greeting when wake word is detected (not just silent listening)
+- Greetings match current personality (flirty, friendly, romantic, tsundere, etc.)
+- 70% probability by default for human-like variation (configurable)
+- New `WAKE_GREETING_PROBABILITY` setting in .env (0.0-1.0)
+
+#### 🔧 Bug Fixes
+- Fixed `find_file` parameter naming (`search_drive` now works as alias for `search_path`)
+- Fixed search not finding files in specific folders like `D:\Steam`
+- Improved PowerShell path escaping for special characters
+
+---
+
 ### Tool Categories
 
 #### 🖥️ Windows Automation (46 Actions)
@@ -77,7 +123,14 @@ Sakura v1.0.0 - A fully autonomous AI assistant with real-time voice interaction
 - Network adapters and IPs
 - Drive information
 - Folder exploration
-- **find_file** - Search for ANY file type across all drives (exe, documents, images, videos, audio, archives, code)
+- **find_file** - Advanced file search with:
+  - User shortcuts (Documents, Downloads, Desktop, etc.)
+  - Environment variable expansion (%APPDATA%, %LOCALAPPDATA%)
+  - UNC/network path support
+  - Folder hints for targeted search
+  - Symlink/junction following
+  - PATH environment search
+  - Configurable depth and removable drive support
 - **find_app_path** - Enhanced app discovery (registry, App Paths, Start Menu, all drives)
 
 #### 🧠 Memory System (16 Actions)
@@ -147,6 +200,11 @@ Sakura v1.0.0 - A fully autonomous AI assistant with real-time voice interaction
 - Sakura announces when background tasks complete
 - Automatic for: file searches, app discovery, git clone, package installs
 - Task history persistence
+
+#### Wake Word Responses
+- Personality-matched spoken greetings on wake word detection
+- Configurable probability (default 70%) for human-like variation
+- Greetings sent to Gemini for natural voice output
 
 #### Connection Health Monitoring (`gemini_client.py`)
 - Auto-reconnect on connection drop

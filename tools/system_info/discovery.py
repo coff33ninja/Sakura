@@ -874,18 +874,82 @@ class SystemDiscovery(BaseTool):
         except Exception as e:
             return ToolResult(status=ToolStatus.ERROR, error=str(e))
     
-    async def _find_file(self, name: str, file_type: str = "any", search_path: str = None, max_results: int = 20) -> ToolResult:
+    async def _fuzzy_find_folder(self, drive_root: str, folder_hint: str) -> Optional[str]:
+        """Fuzzy match a folder name on a drive root
+        
+        Args:
+            drive_root: Drive root like "D:\\"
+            folder_hint: Folder name to fuzzy match
+        
+        Returns:
+            Full path to matched folder or None
+        """
+        try:
+            hint_lower = folder_hint.lower()
+            drive_path = Path(drive_root)
+            
+            if not drive_path.exists():
+                return None
+            
+            # First try exact match (case-insensitive)
+            for folder in drive_path.iterdir():
+                if folder.is_dir() and folder.name.lower() == hint_lower:
+                    return str(folder)
+            
+            # Then try contains match
+            for folder in drive_path.iterdir():
+                if folder.is_dir() and hint_lower in folder.name.lower():
+                    return str(folder)
+            
+            # Then try starts-with match
+            for folder in drive_path.iterdir():
+                if folder.is_dir() and folder.name.lower().startswith(hint_lower):
+                    return str(folder)
+            
+            return None
+        except (PermissionError, OSError):
+            return None
+    
+    async def _find_file(self, name: str, file_type: str = "any", search_path: str = None, search_drive: str = None, folder_hint: str = None, max_results: int = 20, max_depth: int = 6, include_removable: bool = False, follow_links: bool = True, search_path_env: bool = False) -> ToolResult:
         """Find any file by name - executables, documents, images, videos, music, or any file type
         
         Args:
             name: Name or partial name to search for
             file_type: Type of file to find: "any", "exe", "document", "image", "video", "audio", "archive", "code"
-            search_path: Specific path to search (drive letter like "D:" or full path). Searches all drives if not specified.
+            search_path: Specific path to search (drive letter like "D:", full path like "D:\\Steam", or shortcut like "Documents", "Downloads")
+            search_drive: Alias for search_path - accepts drive letter (e.g., "D", "E:") for compatibility
+            folder_hint: Folder name hint to combine with drive (e.g., folder_hint="Steam" + search_drive="D" -> searches D:\\Steam first)
             max_results: Maximum number of results to return (default 20)
+            max_depth: Maximum folder depth to search (default 6)
+            include_removable: Include removable/USB drives in search (default False)
+            follow_links: Follow symlinks and junctions (default True)
+            search_path_env: Also search PATH environment directories (default False for non-exe)
         """
         try:
+            # Accept either search_path or search_drive (search_drive is an alias for compatibility)
+            if search_drive and not search_path:
+                search_path = search_drive
+            
             name_lower = name.lower()
             found = []
+            
+            # === PHASE 1: Path Handling & Expansion ===
+            
+            # User profile shortcut mappings
+            user_shortcuts = {
+                "documents": os.path.expandvars("%USERPROFILE%\\Documents"),
+                "downloads": os.path.expandvars("%USERPROFILE%\\Downloads"),
+                "desktop": os.path.expandvars("%USERPROFILE%\\Desktop"),
+                "pictures": os.path.expandvars("%USERPROFILE%\\Pictures"),
+                "music": os.path.expandvars("%USERPROFILE%\\Music"),
+                "videos": os.path.expandvars("%USERPROFILE%\\Videos"),
+                "appdata": os.path.expandvars("%APPDATA%"),
+                "localappdata": os.path.expandvars("%LOCALAPPDATA%"),
+                "programfiles": os.path.expandvars("%PROGRAMFILES%"),
+                "programfiles86": os.path.expandvars("%PROGRAMFILES(X86)%"),
+                "temp": os.path.expandvars("%TEMP%"),
+                "home": os.path.expandvars("%USERPROFILE%"),
+            }
             
             # Define file extensions by type
             type_extensions = {
@@ -906,22 +970,121 @@ class SystemDiscovery(BaseTool):
             else:
                 ext_filter = "*"
             
+            # Helper function to expand and normalize paths
+            def expand_path(p: str) -> str:
+                if not p:
+                    return p
+                p = p.strip().strip('"').strip("'")
+                
+                # Check for user shortcuts (case-insensitive)
+                p_lower = p.lower().replace(" ", "").replace("_", "")
+                if p_lower in user_shortcuts:
+                    return user_shortcuts[p_lower]
+                
+                # Expand environment variables
+                if "%" in p:
+                    p = os.path.expandvars(p)
+                if "$" in p:
+                    # Handle $env:VAR style
+                    p = os.path.expandvars(p.replace("$env:", "%").replace("$", "%") + "%") if "$" in p else p
+                
+                # Handle ~ for home directory
+                if p.startswith("~"):
+                    p = os.path.expanduser(p)
+                
+                return p
+            
             # Determine search paths
+            is_specific_folder = False
+            is_unc_path = False
+            search_paths = []
+            
             if search_path:
-                # Normalize path
-                if len(search_path) <= 2:
+                search_path = expand_path(search_path)
+                
+                # Check for UNC path
+                if search_path.startswith("\\\\"):
+                    is_unc_path = True
+                    is_specific_folder = True
+                    search_paths = [search_path]
+                # Just a drive letter like "D" or "D:"
+                elif len(search_path) <= 2:
                     search_path = search_path.rstrip(':').upper() + ":\\"
-                search_paths = [search_path]
+                    # If folder_hint provided, try to construct full path
+                    if folder_hint:
+                        hint_path = f"{search_path}{folder_hint}"
+                        if Path(hint_path).exists():
+                            search_paths = [hint_path]
+                            is_specific_folder = True
+                        else:
+                            # Try fuzzy match on drive root
+                            fuzzy_match = await self._fuzzy_find_folder(search_path, folder_hint)
+                            if fuzzy_match:
+                                search_paths = [fuzzy_match]
+                                is_specific_folder = True
+                            else:
+                                search_paths = [search_path]
+                    else:
+                        search_paths = [search_path]
+                # Already formatted drive root like "D:\"
+                elif len(search_path) == 3 and search_path.endswith(':\\'):
+                    if folder_hint:
+                        hint_path = f"{search_path}{folder_hint}"
+                        if Path(hint_path).exists():
+                            search_paths = [hint_path]
+                            is_specific_folder = True
+                        else:
+                            search_paths = [search_path]
+                    else:
+                        search_paths = [search_path]
+                else:
+                    # Full path like "D:\Steam" or "D:\Games\Steam"
+                    is_specific_folder = True
+                    search_paths = [search_path.rstrip('\\')]
             else:
-                # Get all fixed drives
+                # No path specified - get all drives
+                drive_type_filter = "3" if not include_removable else "2,3"  # 2=Removable, 3=Fixed
                 drives_result = await self._run_ps(
-                    "Get-PSDrive -PSProvider FileSystem | Where-Object { $_.Free -ne $null } | Select-Object -ExpandProperty Root"
+                    f"Get-WmiObject Win32_LogicalDisk | Where-Object {{ $_.DriveType -in {drive_type_filter} }} | Select-Object -ExpandProperty DeviceID"
                 )
                 if drives_result:
-                    search_paths = [d.strip() for d in drives_result.split('\n') if d.strip()]
+                    search_paths = [f"{d.strip()}\\" for d in drives_result.split('\n') if d.strip()]
                 else:
                     search_paths = ["C:\\"]
+                
+                # If folder_hint provided without drive, search for that folder on all drives
+                if folder_hint:
+                    hint_paths = []
+                    for drive in search_paths:
+                        hint_path = f"{drive}{folder_hint}"
+                        if Path(hint_path).exists():
+                            hint_paths.append(hint_path)
+                    if hint_paths:
+                        search_paths = hint_paths
+                        is_specific_folder = True
             
+            # === PHASE 5: Search PATH environment if requested (for exe files) ===
+            path_env_results = []
+            if search_path_env or (file_type == "exe" and not search_path):
+                path_dirs = os.environ.get('PATH', '').split(';')
+                for path_dir in path_dirs:
+                    if path_dir and Path(path_dir).exists():
+                        try:
+                            for f in Path(path_dir).iterdir():
+                                if f.is_file() and name_lower in f.name.lower():
+                                    if file_type == "any" or f.suffix.lower() in type_extensions.get(file_type, []):
+                                        path_env_results.append({
+                                            "Name": f.name,
+                                            "Path": str(f),
+                                            "Size": f.stat().st_size,
+                                            "Source": "PATH",
+                                            "Type": "file"
+                                        })
+                        except (PermissionError, OSError):
+                            pass
+                found.extend(path_env_results[:5])  # Limit PATH results
+            
+            # === PHASE 2 & 4: Enhanced priority paths with user locations ===
             # Build PowerShell search command
             if isinstance(ext_filter, list):
                 ext_pattern = ",".join([f"'*{ext}'" for ext in ext_filter])
@@ -929,70 +1092,155 @@ class SystemDiscovery(BaseTool):
             else:
                 include_clause = ""
             
+            # Escape path for PowerShell
+            def escape_ps_path(p: str) -> str:
+                return p.replace("'", "''").replace("`", "``")
+            
             for search_root in search_paths:
                 if len(found) >= max_results:
                     break
+                
+                # Determine if this is a specific folder or drive root
+                is_drive_root = len(search_root) <= 3 or (len(search_root) == 3 and search_root.endswith(':\\'))
+                search_root_escaped = escape_ps_path(search_root)
+                follow_links_ps = "$true" if follow_links else "$false"
                     
                 # Use PowerShell for efficient recursive search with depth limit
                 ps_cmd = f'''
                 $results = @()
-                $searchRoot = "{search_root}"
+                $searchRoot = '{search_root_escaped}'
                 $searchName = "*{name}*"
-                $maxDepth = 4
+                $maxDepth = {max_depth}
+                $isSpecificFolder = ${str(is_specific_folder).lower()}
+                $isDriveRoot = ${str(is_drive_root).lower()}
+                $followLinks = {follow_links_ps}
                 
                 function Search-Files {{
                     param($path, $depth)
                     if ($depth -gt $maxDepth) {{ return }}
                     
                     try {{
+                        # Get items, optionally following symlinks
+                        $getChildParams = @{{
+                            Path = $path
+                            ErrorAction = 'SilentlyContinue'
+                        }}
+                        
                         # Search files in current directory
-                        Get-ChildItem -Path $path -File -Filter $searchName -ErrorAction SilentlyContinue {include_clause} | 
+                        Get-ChildItem @getChildParams -File -Filter $searchName {include_clause} | 
                             Select-Object -First {max_results - len(found)} |
                             ForEach-Object {{
-                                $results += @{{
+                                $isLink = $_.Attributes -band [System.IO.FileAttributes]::ReparsePoint
+                                $script:results += @{{
                                     Name = $_.Name
                                     Path = $_.FullName
                                     Size = $_.Length
                                     Extension = $_.Extension
                                     Modified = $_.LastWriteTime.ToString("yyyy-MM-dd HH:mm")
                                     Type = "file"
+                                    IsSymlink = [bool]$isLink
                                 }}
                             }}
                         
                         # Also find folders matching the name
-                        Get-ChildItem -Path $path -Directory -Filter $searchName -ErrorAction SilentlyContinue |
+                        Get-ChildItem @getChildParams -Directory -Filter $searchName |
                             Select-Object -First 5 |
                             ForEach-Object {{
-                                $results += @{{
+                                $isLink = $_.Attributes -band [System.IO.FileAttributes]::ReparsePoint
+                                $target = $null
+                                if ($isLink -and $followLinks) {{
+                                    try {{ $target = (Get-Item $_.FullName).Target }} catch {{}}
+                                }}
+                                $script:results += @{{
                                     Name = $_.Name
                                     Path = $_.FullName
                                     Type = "folder"
+                                    IsSymlink = [bool]$isLink
+                                    LinkTarget = $target
                                 }}
                             }}
                         
                         # Recurse into subdirectories
-                        if ($results.Count -lt {max_results}) {{
-                            Get-ChildItem -Path $path -Directory -ErrorAction SilentlyContinue | ForEach-Object {{
-                                if ($results.Count -lt {max_results}) {{
-                                    Search-Files -path $_.FullName -depth ($depth + 1)
+                        if ($script:results.Count -lt {max_results}) {{
+                            Get-ChildItem @getChildParams -Directory | ForEach-Object {{
+                                if ($script:results.Count -lt {max_results}) {{
+                                    $isLink = $_.Attributes -band [System.IO.FileAttributes]::ReparsePoint
+                                    # Follow symlinks/junctions if enabled
+                                    if (-not $isLink -or $followLinks) {{
+                                        Search-Files -path $_.FullName -depth ($depth + 1)
+                                    }}
                                 }}
                             }}
                         }}
                     }} catch {{}}
                 }}
                 
-                # Start search from common locations first for speed
-                $priorityPaths = @(
-                    "$searchRoot",
-                    "$searchRoot\\Users",
-                    "$searchRoot\\Program Files",
-                    "$searchRoot\\Program Files (x86)",
-                    "$searchRoot\\Games"
-                )
-                
-                foreach ($p in $priorityPaths) {{
-                    if ((Test-Path $p) -and ($results.Count -lt {max_results})) {{
-                        Search-Files -path $p -depth 0
+                if ($isSpecificFolder) {{
+                    # User specified a specific folder - search it directly
+                    if (Test-Path $searchRoot) {{
+                        Search-Files -path $searchRoot -depth 0
+                    }}
+                }} elseif ($isDriveRoot) {{
+                    # Drive root - search ALL top-level folders, prioritizing common ones
+                    # Phase 2: Enhanced priority paths including user locations
+                    $userProfile = $env:USERPROFILE
+                    $localAppData = $env:LOCALAPPDATA
+                    $appData = $env:APPDATA
+                    
+                    $priorityPaths = @(
+                        "$searchRoot",
+                        # Game platforms
+                        "$searchRoot\\Steam",
+                        "$searchRoot\\SteamLibrary",
+                        "$searchRoot\\SteamLibrary\\steamapps\\common",
+                        "$searchRoot\\GOG Games",
+                        "$searchRoot\\Epic Games",
+                        "$searchRoot\\Games",
+                        "$searchRoot\\Origin Games",
+                        "$searchRoot\\Ubisoft Game Launcher",
+                        "$searchRoot\\Battle.net",
+                        # Standard program locations
+                        "$searchRoot\\Program Files",
+                        "$searchRoot\\Program Files (x86)",
+                        "$searchRoot\\Programs",
+                        "$searchRoot\\Apps",
+                        "$searchRoot\\Software",
+                        "$searchRoot\\Tools",
+                        "$searchRoot\\Utilities",
+                        # Portable apps
+                        "$searchRoot\\PortableApps",
+                        "$searchRoot\\Portable",
+                        # User locations (if on same drive)
+                        "$userProfile\\Documents",
+                        "$userProfile\\Downloads",
+                        "$userProfile\\Desktop",
+                        "$localAppData\\Programs",
+                        "$localAppData\\Microsoft\\WindowsApps",
+                        "$appData"
+                    )
+                    
+                    # Search priority paths first
+                    foreach ($p in $priorityPaths) {{
+                        if ((Test-Path $p) -and ($script:results.Count -lt {max_results})) {{
+                            Search-Files -path $p -depth 0
+                        }}
+                    }}
+                    
+                    # Then search remaining top-level folders not in priority list
+                    if ($script:results.Count -lt {max_results}) {{
+                        $priorityNames = $priorityPaths | ForEach-Object {{ Split-Path $_ -Leaf }} | Select-Object -Unique
+                        Get-ChildItem -Path $searchRoot -Directory -ErrorAction SilentlyContinue | 
+                            Where-Object {{ $_.Name -notin $priorityNames }} |
+                            ForEach-Object {{
+                                if ($script:results.Count -lt {max_results}) {{
+                                    Search-Files -path $_.FullName -depth 0
+                                }}
+                            }}
+                    }}
+                }} else {{
+                    # Regular path - search from there
+                    if (Test-Path $searchRoot) {{
+                        Search-Files -path $searchRoot -depth 0
                     }}
                 }}
                 
@@ -1096,10 +1344,20 @@ class SystemDiscovery(BaseTool):
                     seen.add(path_lower)
                     unique_found.append(item)
             
+            # Build result message
+            location_msg = ""
+            if search_path:
+                if is_unc_path:
+                    location_msg = f" on network path {search_path}"
+                else:
+                    location_msg = f" in {search_path}"
+            else:
+                location_msg = " across all drives"
+            
             return ToolResult(
                 status=ToolStatus.SUCCESS,
                 data=unique_found[:max_results],
-                message=f"Found {len(unique_found)} {file_type} files matching '{name}'" + (f" in {search_path}" if search_path else " across all drives")
+                message=f"Found {len(unique_found)} {file_type} files matching '{name}'{location_msg}"
             )
         except Exception as e:
             return ToolResult(status=ToolStatus.ERROR, error=str(e))
@@ -1336,10 +1594,21 @@ class SystemDiscovery(BaseTool):
                     },
                     "query": {"type": "string", "description": "Search query for search_apps"},
                     "path": {"type": "string", "description": "Folder path for explore_folder"},
-                    "search_path": {"type": "string", "description": "Path or drive to search for find_file (e.g., 'D:', 'C:\\Users'). Searches all drives if not specified"},
+                    "search_path": {
+                        "type": "string",
+                        "description": "Path to search for find_file - can be: drive letter ('D:'), full path ('D:\\Steam'), user shortcut ('Documents', 'Downloads', 'Desktop'), env var ('%APPDATA%'), or UNC path ('\\\\server\\share')"
+                    },
+                    "search_drive": {
+                        "type": "string",
+                        "description": "Drive letter or path to search (e.g., 'D', 'E:', 'D:\\Steam') for find_app_path or find_file - searches all drives if not specified"
+                    },
+                    "folder_hint": {
+                        "type": "string",
+                        "description": "Folder name hint for find_file - combines with search_drive to find folder (e.g., folder_hint='Steam' + search_drive='D' searches D:\\Steam first)"
+                    },
                     "depth": {"type": "integer", "description": "Exploration depth", "default": 1},
+                    "max_depth": {"type": "integer", "description": "Maximum folder depth for find_file search (default 6)", "default": 6},
                     "app_name": {"type": "string", "description": "App name for find_app_path"},
-                    "search_drive": {"type": "string", "description": "Drive letter to search (e.g., 'D', 'E:') for find_app_path - searches all drives if not specified"},
                     "name": {"type": "string", "description": "File or folder name to search for (find_file)"},
                     "file_type": {
                         "type": "string",
@@ -1347,6 +1616,9 @@ class SystemDiscovery(BaseTool):
                         "description": "Type of file to find: any, exe (executables), document (pdf/doc/txt), image, video, audio, archive (zip/rar), code (source files)"
                     },
                     "max_results": {"type": "integer", "description": "Maximum results to return for find_file", "default": 20},
+                    "include_removable": {"type": "boolean", "description": "Include removable/USB drives in find_file search (default false)", "default": False},
+                    "follow_links": {"type": "boolean", "description": "Follow symlinks and junctions in find_file search (default true)", "default": True},
+                    "search_path_env": {"type": "boolean", "description": "Also search PATH environment directories for find_file (default false, auto-enabled for exe type)", "default": False},
                     "filter_key": {"type": "string", "description": "Filter for environment variables"},
                     "count": {"type": "integer", "description": "Number of recent files", "default": 20}
                 },

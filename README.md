@@ -81,7 +81,14 @@
 - **Network info** - Adapters, IPs, DNS
 - **Folder exploration** - Browse any directory
 - **App paths** - Find where apps are installed (searches ALL drives and registry)
-- **Find any file** - Search for executables, documents, images, videos, audio, archives, code files across all drives
+- **Advanced file search** - Find any file type with smart path handling:
+  - User shortcuts: `Documents`, `Downloads`, `Desktop`, `Pictures`, etc.
+  - Environment variables: `%APPDATA%`, `%LOCALAPPDATA%`, `%USERPROFILE%`
+  - Network paths: `\\server\share\folder`
+  - Folder hints: "Find steam.exe in Steam folder on D drive"
+  - Symlink/junction following for Steam libraries
+  - PATH environment search for executables
+  - Configurable depth and removable drive support
 
 ### 🔄 Background Task Execution
 - **Non-blocking operations** - Long tasks run in background while you keep chatting
@@ -89,6 +96,12 @@
 - **Completion notifications** - Sakura tells you when tasks finish
 - **Progress tracking** - Monitor running and pending tasks
 - **Automatic for**: File searches across drives, app discovery, git clone, package installs
+
+### 🎙️ Wake Word Personality Responses
+- **Spoken greetings** - Sakura speaks when you say her name (not just silent listening)
+- **Personality-matched** - Greetings match current persona (flirty, friendly, tsundere, etc.)
+- **Human-like variation** - 70% chance to speak (configurable), adds natural randomness
+- **Configurable** - Set `WAKE_GREETING_PROBABILITY` in .env (0.0-1.0)
 
 ### 🌐 Web & Integrations
 - **Web search** - DuckDuckGo instant answers
@@ -196,7 +209,9 @@ start.bat
 | "What's my PC name?" | Discovers and remembers system info |
 | "Find all Python files" | Starts background search, notifies when done |
 | "Find Steam on D drive" | Searches specific drive for application |
+| "Find steam.exe in Steam folder" | Uses folder hint for targeted search |
 | "Find my vacation photos" | Searches all drives for image files |
+| "Find project files in Documents" | Uses user folder shortcut |
 | "Open Chrome" | Launches Chrome |
 | "Turn up the volume" | Increases system volume |
 | "Create a script to ping Google" | Writes PowerShell script to sandbox |
