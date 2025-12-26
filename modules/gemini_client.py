@@ -26,6 +26,12 @@ class GeminiVoiceClient:
         self._reconnect_lock = asyncio.Lock()
         self._consecutive_errors = 0
         self._max_consecutive_errors = 10
+        # Backoff, rotation and circuit breaker controls
+        self._circuit_open_until = None
+        self._rotation_last = datetime.min
+        self._rotation_cooldown_seconds = 30
+        self._base_backoff_seconds = 1
+        self._max_backoff_seconds = 30
         
     async def initialize(self, system_prompt: str, resume_handle: Optional[str] = None, 
                          tools: Optional[List[Dict[str, Any]]] = None):
@@ -363,6 +369,12 @@ class GeminiVoiceClient:
     
     async def _connect_with_retry(self, config, max_retries: int = 3) -> Optional[Any]:
         """Connect to Gemini with automatic key rotation on failure"""
+        # Prevent reconnect attempts while circuit is open
+        now = datetime.now()
+        if self._circuit_open_until and now < self._circuit_open_until:
+            logging.error(f"Circuit open until {self._circuit_open_until}, skipping connect")
+            return None
+
         for attempt in range(max_retries):
             try:
                 # live.connect returns an async context manager, enter it
@@ -411,14 +423,24 @@ class GeminiVoiceClient:
                     logging.error(f"❓ Unknown error with key {self.current_key.name}: {e}")
                     await self.key_manager.mark_key_used(self.current_key, success=False)
                 
-                # Try next key if available
+                # Backoff before retrying to avoid hot-looping; add jitter
+                backoff = min(self._base_backoff_seconds * (2 ** attempt), self._max_backoff_seconds)
+                jitter = random.uniform(0, backoff * 0.5)
+                await asyncio.sleep(backoff + jitter)
+
+                # Try next key if available (respect rotation cooldown)
                 if attempt < max_retries - 1:
-                    next_key = await self.key_manager.rotate_key()
-                    if next_key and next_key != self.current_key:
-                        self.current_key = next_key
-                        self.client = genai.Client(api_key=self.current_key.key)
-                        logging.info(f"Retrying with key: {self.current_key.name}")
-                        continue
+                    now = datetime.now()
+                    if (now - self._rotation_last).total_seconds() < self._rotation_cooldown_seconds:
+                        logging.info("Rotation cooldown active, will retry same key after backoff")
+                    else:
+                        next_key = await self.key_manager.rotate_key()
+                        if next_key and next_key != self.current_key:
+                            self.current_key = next_key
+                            self.client = genai.Client(api_key=self.current_key.key)
+                            self._rotation_last = datetime.now()
+                            logging.info(f"Retrying with key: {self.current_key.name}")
+                            continue
                 
                 # If this was the last attempt or no other keys available
                 if attempt == max_retries - 1:
@@ -446,9 +468,22 @@ class GeminiVoiceClient:
         if is_rate_limited:
             logging.warning(f"🚫 Rate limit during operation on key {self.current_key.name}")
             await self.key_manager.handle_rate_limit(self.current_key)
-            next_key = await self.key_manager.rotate_key()
-            if next_key and next_key != self.current_key:
-                await self._reconnect_with_new_key(next_key)
+            # Avoid rapid rotations: respect cooldown and apply backoff
+            now = datetime.now()
+            if (now - self._rotation_last).total_seconds() < self._rotation_cooldown_seconds:
+                logging.warning("Rotation cooldown active; delaying rotation and backing off")
+                await asyncio.sleep(self._rotation_cooldown_seconds)
+            else:
+                next_key = await self.key_manager.rotate_key()
+                self._rotation_last = datetime.now()
+                if next_key and next_key != self.current_key:
+                    await self._reconnect_with_new_key(next_key)
+                    return
+            # If we didn't rotate, increase backoff and possibly open circuit
+            self._consecutive_errors += 1
+            if self._consecutive_errors >= self._max_consecutive_errors:
+                self._circuit_open_until = datetime.now() + timedelta(seconds=max(self._rotation_cooldown_seconds, 60))
+                logging.error(f"Circuit opened until {self._circuit_open_until} due to repeated errors")
         elif is_invalid_key:
             logging.error(f"❌ Invalid key during operation: {self.current_key.name}")
             await self.key_manager.handle_invalid_key(self.current_key)
