@@ -110,6 +110,8 @@ class MetaTools(BaseTool):
             "search_capabilities": self._search_capabilities,
             "analyze_request": self._analyze_request,
             "get_capability_summary": self._get_capability_summary,
+            # Dynamic tool execution
+            "execute_tool": self._execute_tool,
             # Script generation
             "generate_script": self._generate_script,
             "save_script": self._save_script,
@@ -476,6 +478,81 @@ class MetaTools(BaseTool):
             )
             
         except Exception as e:
+            return ToolResult(status=ToolStatus.ERROR, error=str(e))
+    
+    # ==================== DYNAMIC TOOL EXECUTION ====================
+    
+    async def _execute_tool(self, tool_name: str, tool_action: str, 
+                            tool_args: Dict[str, Any] = None, **kwargs) -> ToolResult:
+        """Execute any tool dynamically after introspection
+        
+        This allows the AI to discover a tool via introspection and then
+        immediately execute it without needing a separate tool call.
+        
+        Args:
+            tool_name: Name of the tool to execute (e.g., "windows", "developer", "productivity")
+            tool_action: The action to perform (e.g., "open_app", "git_status", "create_note")
+            tool_args: Arguments to pass to the tool action
+        
+        Example:
+            After discovering windows.open_app via search_capabilities,
+            execute it with: execute_tool(tool_name="windows", tool_action="open_app", tool_args={"app": "notepad"})
+        """
+        try:
+            if not self._tool_registry:
+                return ToolResult(
+                    status=ToolStatus.ERROR,
+                    error="Tool registry not available - cannot execute tools dynamically"
+                )
+            
+            # Get the tool from registry
+            tool = self._tool_registry.get(tool_name)
+            if not tool:
+                available = self._tool_registry.list_tools()
+                return ToolResult(
+                    status=ToolStatus.ERROR,
+                    error=f"Tool '{tool_name}' not found. Available tools: {available}"
+                )
+            
+            if not tool.enabled:
+                return ToolResult(
+                    status=ToolStatus.ERROR,
+                    error=f"Tool '{tool_name}' is disabled"
+                )
+            
+            # Validate the action exists
+            await self._refresh_tool_cache()
+            if tool_name in self._tool_cache:
+                valid_actions = self._tool_cache[tool_name].get("actions", [])
+                if tool_action not in valid_actions:
+                    return ToolResult(
+                        status=ToolStatus.ERROR,
+                        error=f"Action '{tool_action}' not found in {tool_name}. Valid actions: {valid_actions[:10]}..."
+                    )
+            
+            # Execute the tool
+            args = tool_args or {}
+            args["action"] = tool_action
+            
+            logging.info(f"Meta executing: {tool_name}.{tool_action} with args: {list(args.keys())}")
+            
+            result = await tool.execute(**args)
+            
+            # Wrap the result with execution context
+            return ToolResult(
+                status=result.status,
+                data={
+                    "executed_tool": tool_name,
+                    "executed_action": tool_action,
+                    "result": result.data,
+                    "message": result.message
+                },
+                message=f"⚡ {tool_name}.{tool_action}: {result.message}" if result.message else f"⚡ Executed {tool_name}.{tool_action}",
+                error=result.error
+            )
+            
+        except Exception as e:
+            logging.error(f"Dynamic tool execution failed: {e}")
             return ToolResult(status=ToolStatus.ERROR, error=str(e))
 
     
@@ -1486,6 +1563,8 @@ endlocal
                             # Introspection
                             "list_all_tools", "get_tool_details", "search_capabilities",
                             "analyze_request", "get_capability_summary",
+                            # Dynamic execution
+                            "execute_tool",
                             # Script generation
                             "generate_script", "save_script", "list_scripts",
                             "get_script", "delete_script", "verify_script",
@@ -1498,9 +1577,15 @@ endlocal
                     },
                     # Introspection params
                     "category": {"type": "string", "description": "Tool category to filter by"},
-                    "tool_name": {"type": "string", "description": "Name of tool to get details for"},
+                    "tool_name": {"type": "string", "description": "Name of tool to execute or get details for"},
                     "query": {"type": "string", "description": "Search query for capabilities"},
                     "user_request": {"type": "string", "description": "User's natural language request to analyze"},
+                    # Dynamic execution params
+                    "tool_action": {"type": "string", "description": "The action to execute on the tool (for execute_tool)"},
+                    "tool_args": {
+                        "type": "object",
+                        "description": "Arguments to pass to the tool action (for execute_tool)"
+                    },
                     # Script params
                     "script_id": {"type": "string", "description": "ID of extension script"},
                     "name": {"type": "string", "description": "Script name"},

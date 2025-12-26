@@ -251,9 +251,9 @@ start.bat
 | `mcp_client` | 3 | MCP server connection (fixed protocol, 60s timeout) |
 | `productivity` | 27 | Reminders, timers, notes, to-do lists with FTS search |
 | `developer` | 47 | Git, code execution, packages, SSH/SMB/FTP/RDP connections |
-| `meta` | 15 | Self-introspection, capability search, extension script generation |
+| `meta` | 16 | Self-introspection, capability search, dynamic tool execution, extension scripts |
 
-**Total: 206 tool actions**
+**Total: 207 tool actions**
 
 ## 📁 Project Structure
 
