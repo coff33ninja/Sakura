@@ -146,6 +146,32 @@ class GeminiVoiceClient:
                 async for response in turn:
                     response_data = {}
                     
+                    # Try all possible ways to get audio
+                    audio_data = None
+                    
+                    # Method 1: Check server_content.model_turn.parts
+                    try:
+                        if response.server_content and response.server_content.model_turn:
+                            for part in response.server_content.model_turn.parts:
+                                if hasattr(part, 'inline_data') and part.inline_data:
+                                    if hasattr(part.inline_data, 'data'):
+                                        audio_data = part.inline_data.data
+                                if hasattr(part, 'text') and part.text:
+                                    response_data['text'] = part.text
+                    except Exception as e:
+                        logging.debug(f"Error checking server_content.model_turn: {e}")
+                    
+                    # Method 2: Check for audio in response directly
+                    if not audio_data and hasattr(response, 'data'):
+                        if isinstance(response.data, bytes):
+                            audio_data = response.data
+                    
+                    # Add audio to response if found
+                    if audio_data and isinstance(audio_data, bytes):
+                        response_data['audio'] = audio_data
+                    elif audio_data:
+                        logging.debug(f"Found audio-like data but wrong type: {type(audio_data)}")
+                    
                     # Handle interruption
                     if response.server_content and response.server_content.interrupted:
                         response_data['interrupted'] = True
@@ -161,15 +187,9 @@ class GeminiVoiceClient:
                             function_calls_found.extend(response.tool_call.function_calls)
                             logging.info(f"🔧 Function calls in tool_call: {len(response.tool_call.function_calls)}")
                     
-                    # Check server_content.model_turn.parts for function calls (Live API format)
+                    # Check server_content.model_turn.parts for function calls (already done above)
                     if response.server_content and response.server_content.model_turn:
                         for part in response.server_content.model_turn.parts:
-                            # Extract audio
-                            if part.inline_data and isinstance(part.inline_data.data, bytes):
-                                response_data['audio'] = part.inline_data.data
-                            # Extract text
-                            if hasattr(part, 'text') and part.text:
-                                response_data['text'] = part.text
                             # Extract function calls
                             if hasattr(part, 'function_call') and part.function_call:
                                 function_calls_found.append(part.function_call)

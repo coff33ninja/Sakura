@@ -93,3 +93,7 @@ sakura.db-wal
 
 #Ignore vscode AI rules
 .github\instructions\codacy.instructions.md
+background_tasks_history.json
+.gitignore
+intent_learning.json
+suggestion_history.json

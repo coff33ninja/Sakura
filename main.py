@@ -707,14 +707,18 @@ COMMON MCP SERVERS (run with windows run_command "uvx <server>"):
             import time
             start_time = time.time()
             
-            # Add system state to tool args (for speaker auth and other state-aware tools)
-            tool_args['_is_speaking'] = self.is_speaking
+            # Add system state only to speaker recognition tool (needs it for auth)
+            if tool_name == 'speaker_recognition':
+                tool_args['_is_speaking'] = self.is_speaking
             
             result = await self.tool_registry.execute_tool(tool_name, **tool_args)
             duration_ms = int((time.time() - start_time) * 1000)
             
+            # Remove system state before logging (internal flag only)
+            logged_args = {k: v for k, v in tool_args.items() if k != '_is_speaking'}
+            
             # Log action to memory for history
-            await self._log_action(tool_name, tool_args, result)
+            await self._log_action(tool_name, logged_args, result)
             
             # Update tool patterns for learning
             if hasattr(self.conversation_context, '_db') and self.conversation_context._db:
@@ -724,7 +728,7 @@ COMMON MCP SERVERS (run with windows run_command "uvx <server>"):
                         action_name=action,
                         success=(result.status.value == "success"),
                         duration_ms=duration_ms,
-                        params=tool_args
+                        params=logged_args
                     )
                 except Exception as e:
                     logging.debug(f"Tool pattern update error: {e}")
