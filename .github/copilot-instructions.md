@@ -150,6 +150,13 @@ async with aiofiles.open(filepath, 'r') as f:
 ### MCP Integration
 - **MCPClient tool**: Discovers and calls MCP servers (60s timeout, automatic cleanup)
 - **Use case**: Extend Sakura with external tool servers
+- **Codacy MCP**: Code quality analysis and security scanning
+  - When creating or modifying scripts, use Codacy to analyze code quality
+  - Example: `mcp_client(action="call", server="codacy", tool="codacy_run_local_analysis", path=script_path)`
+  - Catches bugs, security issues, and style problems before execution
+  - Especially important for system automation, file operations, and security-sensitive code
+- **Configuration**: API tokens stored in `.env` file, referenced in `mcp_config.json` with `${VAR_NAME}` syntax
+- **Supported servers**: codacy, brave-search, github, slack, google-maps, and others
 
 ## Common Gotchas
 - **Config defaults**: Check environment variables - `GEMINI_API_KEY`, `PICOVOICE_ACCESS_KEY`, `ASSISTANT_NAME`
@@ -172,6 +179,27 @@ python main.py                                # Start Sakura
 2. Add to `modules/__init__.py` exports
 3. Add tests in `tests/modules/test_new_module.py` using `pytest-asyncio`
 4. Integrate into `main.py` (AIGirlfriend class) if core functionality
+
+### Creating Scripts for Users
+When generating scripts (PowerShell, Python, batch, etc.):
+1. Save with `windows.execute_script()` or `developer.generate_script()`
+2. Always analyze code quality with Codacy MCP before running:
+   ```python
+   # After creating script, call Codacy analysis
+   result = await mcp_client.execute(
+       action="call",
+       server="codacy",
+       tool="codacy_run_local_analysis",
+       path=script_path
+   )
+   # Check for security issues, bugs, style problems
+   ```
+3. For security-sensitive scripts (file ops, system changes, network calls):
+   - Codacy analysis is MANDATORY
+   - Review issues before user runs script
+   - Provide summary of any concerns to user
+4. Save script path in memory for future reference
+5. Create readable, commented code - users may modify it
 
 ## Project-Specific Conventions
 - **Logging**: `logging.info()` for flow, `.warning()` for issues, `.error()` for failures

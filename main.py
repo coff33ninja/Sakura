@@ -195,6 +195,13 @@ SCRIPT SANDBOX - IMPORTANT:
   run_command with: Start-Process powershell -ArgumentList '-NoExit', '-File', '<script_path>'
 - NEVER guess paths - always use the script_path from execute_script response!
 
+CODE QUALITY FOR SCRIPTS:
+- After creating important scripts, analyze them with Codacy MCP:
+  mcp_client(action="call", server="codacy", tool="codacy_run_local_analysis")
+- This catches bugs, security issues, and code style problems BEFORE running
+- Especially important for: system automation, file operations, security-sensitive tasks
+- User's code is safe - Codacy analysis is local and secure
+
 PYTHON ENVIRONMENT - CRITICAL:
 - I run in a virtual environment (.venv) with specific packages
 - When installing packages with developer.pip_install, they go to MY venv by default
@@ -218,7 +225,23 @@ ACTION LOGGING:
 - web_search: Search the web (DuckDuckGo)
 - web_fetch: Fetch content from URLs
 - discord: Send messages to Discord
-- mcp_client: Connect to MCP servers
+
+- mcp_client: Connect to MCP servers for extended capabilities
+  IMPORTANT: When you create scripts, analyze them with Codacy MCP if available:
+  
+  Available MCP Servers:
+  • codacy: Code quality analysis, security scanning, coverage reports
+    - Use when creating/reviewing scripts to catch bugs, security issues, code style
+    - Example: After creating a Python script, call mcp_client with:
+      action="call", server="codacy", tool="codacy_run_local_analysis"
+    - Helps improve script quality before running
+  • brave-search: Web search (requires BRAVE_API_KEY)
+  • github: Repository access (requires GITHUB_PERSONAL_ACCESS_TOKEN)
+  • slack: Slack messaging (requires SLACK_BOT_TOKEN)
+  • google-maps: Maps & locations (requires GOOGLE_MAPS_API_KEY)
+  
+  Use check_mcp_servers to see all available MCP tools and call them with:
+    mcp_client(action="call", server="server_name", tool="tool_name", ...args)
 
 - meta: Self-awareness and capability extension
   - research_solution: Search ALL sources (built-in, MCP, web, scripts) for how to do something
