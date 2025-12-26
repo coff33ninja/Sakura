@@ -12,6 +12,9 @@ import signal
 import sys
 from dotenv import load_dotenv
 
+# Load environment variables from .env file
+load_dotenv()
+
 from modules import (
     AppConfig, AsyncConfigLoader, AudioManager, WakeWordDetector, 
     SessionManager, GeminiVoiceClient, get_current_persona, CURRENT_PERSONALITY,
@@ -21,9 +24,6 @@ from modules import (
 from modules.conversation_context import ConversationContext
 from modules.persona import get_wake_responses
 from tools import create_tool_registry, ToolRegistry
-
-# Load environment variables
-load_dotenv()
 
 class AIGirlfriend:
     """Main application class for AI Girlfriend voice chat"""

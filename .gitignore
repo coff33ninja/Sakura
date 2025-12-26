@@ -89,3 +89,7 @@ backups/sakura_wake_word/Sakura_en_windows_v4_0_0.ppn
 sakura.db
 sakura.db-shm
 sakura.db-wal
+
+
+#Ignore vscode AI rules
+.github\instructions\codacy.instructions.md
