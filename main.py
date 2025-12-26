@@ -598,7 +598,8 @@ COMMON MCP SERVERS (run with windows run_command "uvx <server>"):
                         timeout=0.1
                     )
                     if audio_data:
-                        # Set speaking flag to prevent speaker auth during Sakura's speech
+                        # Set speaking flag ONLY during actual audio playback (not after)
+                        # This prevents speaker auth from rejecting the AI's own voice
                         self.is_speaking = True
                         try:
                             # Play in thread to not block async loop
@@ -607,8 +608,7 @@ COMMON MCP SERVERS (run with windows run_command "uvx <server>"):
                                 audio_data
                             )
                         finally:
-                            # Clear speaking flag after a brief delay to account for audio latency
-                            await asyncio.sleep(0.5)
+                            # Clear flag immediately after playback completes
                             self.is_speaking = False
                 except asyncio.TimeoutError:
                     continue
